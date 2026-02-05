@@ -317,14 +317,8 @@ func (m *Manager) matchByCookieLocked(r *http.Request) *routeEntry {
 	if err != nil {
 		return nil
 	}
+	prefix = normalizePrefix(prefix)
 	if prefix == "" {
-		return nil
-	}
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	prefix = strings.TrimRight(prefix, "/")
-	if prefix == "" || prefix == "/" {
 		return nil
 	}
 	return m.matchLocked(prefix)
@@ -391,7 +385,7 @@ func newRouteProxy(prefix, target string, stripPrefix bool, hostHeader string, m
 		// When we strip the prefix for upstream routing, we need to re-add it for browsers:
 		// - absolute redirects (Location: /foo)
 		// - cookie paths (Path=/)
-		// - root-absolute asset URLs in HTML/CSS/JS ("/assets/...", url(/assets/...))
+		// - root-absolute asset URLs in HTML/CSS/SVG/JSON ("/assets/...", url(/assets/...))
 		if stripPrefix && prefix != "" && prefix != "/" {
 			rewriteLocation(resp, prefix)
 			rewriteSetCookiePath(resp, prefix)
@@ -559,15 +553,8 @@ func rewriteReversePrefixCookie(resp *http.Response, prefix string) {
 	if resp == nil || resp.Header == nil {
 		return
 	}
-	p := strings.TrimSpace(prefix)
-	if p == "" || p == "/" {
-		return
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	p = strings.TrimRight(p, "/")
-	if p == "" || p == "/" {
+	p := normalizePrefix(prefix)
+	if p == "" {
 		return
 	}
 	c := (&http.Cookie{
@@ -596,22 +583,42 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 		return nil
 	}
 
+	reqPath := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		reqPath = resp.Request.URL.Path
+	}
+	pathCT := inferContentTypeFromPath(reqPath)
+
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
-	if ct == "" && resp.Request != nil && resp.Request.URL != nil {
-		ct = inferContentTypeFromPath(resp.Request.URL.Path)
-	}
-	if ct == "" {
-		return nil
-	}
 	if i := strings.Index(ct, ";"); i >= 0 {
 		ct = strings.TrimSpace(ct[:i])
+	}
+	if ct == "" {
+		ct = pathCT
+	}
+	if ct == "" || ct == "text/event-stream" {
+		// Never buffer/modify SSE.
+		return nil
+	}
+	if isJavaScriptContentType(ct) || pathCT == "application/javascript" {
+		// Avoid rewriting JS bundles (including misleading content-types) to prevent breaking apps.
+		return nil
 	}
 	if !isRewritableContentType(ct) {
 		return nil
 	}
-	if ct == "text/event-stream" {
-		// Never buffer/modify SSE.
-		return nil
+
+	setBody := func(b []byte) {
+		resp.Body = io.NopCloser(bytes.NewReader(b))
+		resp.ContentLength = int64(len(b))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(b)))
+		resp.Header.Del("Transfer-Encoding")
+	}
+	restoreStream := func(buf []byte) {
+		resp.Body = multiReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(buf), resp.Body),
+			Closer: resp.Body,
+		}
 	}
 
 	if encoding == "gzip" {
@@ -621,10 +628,7 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 		}
 		if len(compressed) > maxBody {
 			// Too large to buffer; restore consumed bytes and stream the rest.
-			resp.Body = multiReadCloser{
-				Reader: io.MultiReader(bytes.NewReader(compressed), resp.Body),
-				Closer: resp.Body,
-			}
+			restoreStream(compressed)
 			return nil
 		}
 		_ = resp.Body.Close()
@@ -632,10 +636,7 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 		gr, err := gzip.NewReader(bytes.NewReader(compressed))
 		if err != nil {
 			// Invalid gzip; fall back to the original payload.
-			resp.Body = io.NopCloser(bytes.NewReader(compressed))
-			resp.ContentLength = int64(len(compressed))
-			resp.Header.Set("Content-Length", strconv.Itoa(len(compressed)))
-			resp.Header.Del("Transfer-Encoding")
+			setBody(compressed)
 			return nil
 		}
 		raw, err := io.ReadAll(io.LimitReader(gr, maxBody+1))
@@ -645,31 +646,18 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 		}
 		if len(raw) > maxBody {
 			// Too large after decompressing; keep original gzip body.
-			resp.Body = io.NopCloser(bytes.NewReader(compressed))
-			resp.ContentLength = int64(len(compressed))
-			resp.Header.Set("Content-Length", strconv.Itoa(len(compressed)))
-			resp.Header.Del("Transfer-Encoding")
+			setBody(compressed)
 			return nil
 		}
 
-		reqPath := ""
-		if resp.Request != nil && resp.Request.URL != nil {
-			reqPath = resp.Request.URL.Path
-		}
-		rewritten := rewriteTextPayload(ct, reqPath, raw, prefix)
+		rewritten := rewriteTextPayload(ct, raw, prefix)
 		if bytes.Equal(raw, rewritten) {
 			// No changes: keep original gzip response to preserve caching headers/ETags.
-			resp.Body = io.NopCloser(bytes.NewReader(compressed))
-			resp.ContentLength = int64(len(compressed))
-			resp.Header.Set("Content-Length", strconv.Itoa(len(compressed)))
-			resp.Header.Del("Transfer-Encoding")
+			setBody(compressed)
 			return nil
 		}
 
-		resp.Body = io.NopCloser(bytes.NewReader(rewritten))
-		resp.ContentLength = int64(len(rewritten))
-		resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
-		resp.Header.Del("Transfer-Encoding")
+		setBody(rewritten)
 		resp.Header.Del("Content-Encoding")
 		resp.Header.Del("ETag")
 		return nil
@@ -681,31 +669,18 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 	}
 	if len(raw) > maxBody {
 		// Too large to buffer; restore consumed bytes and stream the rest.
-		resp.Body = multiReadCloser{
-			Reader: io.MultiReader(bytes.NewReader(raw), resp.Body),
-			Closer: resp.Body,
-		}
+		restoreStream(raw)
 		return nil
 	}
 	_ = resp.Body.Close()
 
-	reqPath := ""
-	if resp.Request != nil && resp.Request.URL != nil {
-		reqPath = resp.Request.URL.Path
-	}
-	rewritten := rewriteTextPayload(ct, reqPath, raw, prefix)
+	rewritten := rewriteTextPayload(ct, raw, prefix)
 	if bytes.Equal(raw, rewritten) {
-		resp.Body = io.NopCloser(bytes.NewReader(raw))
-		resp.ContentLength = int64(len(raw))
-		resp.Header.Set("Content-Length", strconv.Itoa(len(raw)))
-		resp.Header.Del("Transfer-Encoding")
+		setBody(raw)
 		return nil
 	}
 
-	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
-	resp.ContentLength = int64(len(rewritten))
-	resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
-	resp.Header.Del("Transfer-Encoding")
+	setBody(rewritten)
 	resp.Header.Del("ETag")
 	return nil
 }
@@ -740,29 +715,18 @@ func inferContentTypeFromPath(p string) string {
 	}
 }
 
-func rewriteTextPayload(contentType, reqPath string, in []byte, prefix string) []byte {
+func rewriteTextPayload(contentType string, in []byte, prefix string) []byte {
 	if in == nil {
 		return nil
 	}
 
-	if !isJavaScriptContentType(contentType) && reqPath != "" {
-		// Some origins serve JS with a generic Content-Type (e.g. text/plain); infer from path.
-		if inferContentTypeFromPath(reqPath) == "application/javascript" {
-			contentType = "application/javascript"
-		}
-	}
-
 	var out []byte
-	if isJavaScriptContentType(contentType) {
-		return in
-	} else {
-		switch contentType {
-		case "text/html", "application/xhtml+xml":
-			out = rewriteHTMLRootAbsolutePaths(in, prefix)
-		default:
-			// Always apply the safe, quote/url() based rewrite.
-			out = rewriteRootAbsolutePaths(in, prefix)
-		}
+	switch contentType {
+	case "text/html", "application/xhtml+xml":
+		out = rewriteHTMLRootAbsolutePaths(in, prefix)
+	default:
+		// Always apply the safe, quote/url() based rewrite.
+		out = rewriteRootAbsolutePaths(in, prefix)
 	}
 
 	// HTML needs extra help for attributes like srcset where multiple URLs exist within one quoted value:
@@ -919,15 +883,13 @@ type multiReadCloser struct {
 func isRewritableContentType(ct string) bool {
 	switch {
 	case strings.HasPrefix(ct, "text/"):
-		// Covers text/html, text/css, text/javascript, etc.
-		return true
-	case ct == "application/javascript":
-		return true
-	case ct == "application/x-javascript":
-		return true
+		// Covers text/html, text/css, etc.
+		return !isJavaScriptContentType(ct)
 	case ct == "application/json":
 		return true
 	case ct == "application/manifest+json":
+		return true
+	case ct == "application/xhtml+xml":
 		return true
 	case ct == "image/svg+xml":
 		return true
@@ -1012,18 +974,26 @@ func urlHasPathPrefix(u []byte, prefix []byte) bool {
 }
 
 func normalizedPrefixBytes(prefix string) []byte {
+	p := normalizePrefix(prefix)
+	if p == "" {
+		return nil
+	}
+	return []byte(p)
+}
+
+func normalizePrefix(prefix string) string {
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" || prefix == "/" {
-		return nil
+		return ""
 	}
 	if !strings.HasPrefix(prefix, "/") {
 		prefix = "/" + prefix
 	}
 	prefix = strings.TrimRight(prefix, "/")
 	if prefix == "" || prefix == "/" {
-		return nil
+		return ""
 	}
-	return []byte(prefix)
+	return prefix
 }
 
 func isRootPathContext(b []byte, slashIndex int) bool {
