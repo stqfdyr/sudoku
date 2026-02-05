@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/saba-futai/sudoku/internal/config"
-	"github.com/saba-futai/sudoku/pkg/crypto"
 )
 
 func TestHTTPProxy_Multiplex_LargeDownloads(t *testing.T) {
@@ -72,12 +71,7 @@ func TestHTTPProxy_Multiplex_LargeDownloads(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	pair, err := crypto.GenerateMasterKey()
-	if err != nil {
-		t.Fatalf("keygen failed: %v", err)
-	}
-	serverKey := crypto.EncodePoint(pair.Public)
-	clientKey := crypto.EncodeScalar(pair.Private)
+	serverKey, clientKey := newTestKeys(t)
 
 	ports, err := getFreePorts(2)
 	if err != nil {
@@ -92,11 +86,11 @@ func TestHTTPProxy_Multiplex_LargeDownloads(t *testing.T) {
 		LocalPort:          serverPort,
 		FallbackAddr:       "",
 		Key:                serverKey,
-		AEAD:               "chacha20-poly1305",
+		AEAD:               testAEAD,
 		SuspiciousAction:   "fallback",
 		PaddingMin:         0,
 		PaddingMax:         0,
-		ASCII:              "prefer_ascii",
+		ASCII:              testASCII,
 		EnablePureDownlink: true,
 		HTTPMask: config.HTTPMaskConfig{
 			Disable: false,
@@ -112,10 +106,10 @@ func TestHTTPProxy_Multiplex_LargeDownloads(t *testing.T) {
 		LocalPort:          clientPort,
 		ServerAddress:      fmt.Sprintf("127.0.0.1:%d", serverPort),
 		Key:                clientKey,
-		AEAD:               "chacha20-poly1305",
+		AEAD:               testAEAD,
 		PaddingMin:         0,
 		PaddingMax:         0,
-		ASCII:              "prefer_ascii",
+		ASCII:              testASCII,
 		EnablePureDownlink: true,
 		ProxyMode:          "global",
 		HTTPMask: config.HTTPMaskConfig{

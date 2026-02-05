@@ -151,6 +151,23 @@ Raw TCP forwarding:
 ```
 Then connect your TCP client to `<server>:8081` directly. (Only one TCP route per entry.)
 
+TCP-over-WebSocket (TCP-over-HTTP/CDN):
+```json
+{
+  "reverse": {
+    "routes": [{ "path": "/ssh", "target": "127.0.0.1:22" }]
+  }
+}
+```
+Run a local forwarder:
+```bash
+./sudoku -rev-dial wss://example.com:8081/ssh -rev-listen 127.0.0.1:2222
+ssh -p 2222 127.0.0.1
+```
+Notes:
+- The tunnel endpoint is the **exact path** `/ssh` (no trailing slash) and negotiates WebSocket subprotocol `sudoku-tcp-v1`.
+- Non-`sudoku-tcp-v1` WebSockets are still proxied to the upstream app normally.
+
 ### Docker (Server)
 Build locally:
 ```bash

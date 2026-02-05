@@ -118,3 +118,34 @@ go build -o sudoku ./cmd/sudoku-tunnel
 - Linux 持久化：可参考 `doc/README.md` 里的 systemd 示例编写服务。
 - 更新：替换二进制后重启进程；如密钥未变，无需改配置。
 - 想快速重新生成配置：尝试 `./sudoku -tui`，按提示一步步选择，会自动生成并启动。
+
+## 11（可选）反向代理（HTTP 子路径 + TCP-over-WebSocket）
+用于把客户端（内网/NAT 后）服务通过服务端的一个入口端口暴露出来。
+
+服务端（`server.json`）：
+```json
+{ "reverse": { "listen": ":8081" } }
+```
+
+客户端（`client.json`）：
+```json
+{
+  "reverse": {
+    "client_id": "r4s",
+    "routes": [
+      { "path": "/gitea", "target": "127.0.0.1:3000" },
+      { "path": "/ssh", "target": "127.0.0.1:22" }
+    ]
+  }
+}
+```
+
+- HTTP：打开 `http://<server>:8081/gitea/`（子路径资源、WebSocket 等都应可用）
+- TCP-over-WebSocket（更适合 CDN/反代）：运行本地转发器，然后连接本地端口：
+```bash
+./sudoku -rev-dial wss://example.com:8081/ssh -rev-listen 127.0.0.1:2222
+ssh -p 2222 127.0.0.1
+```
+注意：
+- TCP 隧道入口是 **精确路径** `/ssh`（不要带尾斜杠），并协商 WebSocket 子协议 `sudoku-tcp-v1`。
+- 自签证书自测可加 `-rev-insecure`（生产环境不要用）。

@@ -114,3 +114,33 @@ To run through Cloudflare (or other CDN/reverse-proxy), use real HTTP tunnel mod
 - Linux persistence: see the systemd example in `doc/README.md`.
 - Upgrading: replace the binary and restart; configs stay the same if keys do not change.
 - Want an interactive setup? Try `./sudoku -tui` and follow the prompts.
+
+## 11) Optional: Reverse proxy (HTTP + TCP-over-WebSocket)
+Expose client-side services (behind NAT) on a server-side entry port.
+
+Server (`server.json`):
+```json
+{ "reverse": { "listen": ":8081" } }
+```
+
+Client (`client.json`):
+```json
+{
+  "reverse": {
+    "client_id": "r4s",
+    "routes": [
+      { "path": "/gitea", "target": "127.0.0.1:3000" },
+      { "path": "/ssh", "target": "127.0.0.1:22" }
+    ]
+  }
+}
+```
+
+- HTTP: open `http://<server>:8081/gitea/`
+- TCP-over-WebSocket (CDN-friendly): run a local forwarder and then connect to the local port:
+```bash
+./sudoku -rev-dial wss://example.com:8081/ssh -rev-listen 127.0.0.1:2222
+ssh -p 2222 127.0.0.1
+```
+Notes:
+- The TCP tunnel endpoint is the **exact path** `/ssh` (no trailing slash) and negotiates WebSocket subprotocol `sudoku-tcp-v1`.

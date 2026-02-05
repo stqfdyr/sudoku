@@ -1,15 +1,14 @@
 package main
 
 import (
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 
-	"filippo.io/edwards25519"
 	"github.com/saba-futai/sudoku/internal/app"
 	"github.com/saba-futai/sudoku/internal/config"
+	"github.com/saba-futai/sudoku/internal/reverse"
 	"github.com/saba-futai/sudoku/pkg/crypto"
 )
 
@@ -22,39 +21,30 @@ var (
 	exportLink  = flag.Bool("export-link", false, "Print sudoku:// short link generated from the config")
 	publicHost  = flag.String("public-host", "", "Advertised server host for short link generation (server mode); supports host or host:port")
 	setupWizard = flag.Bool("tui", false, "Launch interactive TUI to create config before starting")
+
+	revDial     = flag.String("rev-dial", "", "Dial a reverse TCP-over-WebSocket endpoint (ws:// or wss://) and forward from rev-listen")
+	revListen   = flag.String("rev-listen", "", "Local TCP listen address for reverse forwarder (e.g., 127.0.0.1:2222)")
+	revInsecure = flag.Bool("rev-insecure", false, "Skip TLS verification for wss reverse dial (testing only)")
 )
 
 func main() {
 	flag.Parse()
 
+	if *revDial != "" || *revListen != "" {
+		if *revDial == "" || *revListen == "" {
+			log.Fatalf("reverse forwarder requires both -rev-dial and -rev-listen")
+		}
+		if err := reverse.ServeLocalWSForward(*revListen, *revDial, *revInsecure); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	if *keygen {
 		if *more != "" {
-
-			// 1. Decode input
-			keyBytes, err := hex.DecodeString(*more)
+			x, err := crypto.ParsePrivateScalar(*more)
 			if err != nil {
-				log.Fatalf("Invalid private key hex: %v", err)
-			}
-
-			var x *edwards25519.Scalar
-			if len(keyBytes) == 32 {
-				x, err = edwards25519.NewScalar().SetCanonicalBytes(keyBytes)
-				if err != nil {
-					log.Fatalf("Invalid scalar: %v", err)
-				}
-			} else if len(keyBytes) == 64 {
-				// Recover x from r, k
-				r, err := edwards25519.NewScalar().SetCanonicalBytes(keyBytes[:32])
-				if err != nil {
-					log.Fatalf("Invalid scalar r: %v", err)
-				}
-				k, err := edwards25519.NewScalar().SetCanonicalBytes(keyBytes[32:])
-				if err != nil {
-					log.Fatalf("Invalid scalar k: %v", err)
-				}
-				x = new(edwards25519.Scalar).Add(r, k)
-			} else {
-				log.Fatal("Invalid key length. Must be 32 bytes (Master) or 64 bytes (Split)")
+				log.Fatalf("Invalid private key: %v", err)
 			}
 
 			// 2. Generate new split key
@@ -71,10 +61,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to generate key: %v", err)
 		}
-		keyBytes, err := hex.DecodeString(crypto.EncodeScalar(pair.Private))
-
-		x, err := edwards25519.NewScalar().SetCanonicalBytes(keyBytes)
-		splitKey, err := crypto.SplitPrivateKey(x)
+		splitKey, err := crypto.SplitPrivateKey(pair.Private)
 		if err != nil {
 			log.Fatalf("Failed to generate key: %v", err)
 		}

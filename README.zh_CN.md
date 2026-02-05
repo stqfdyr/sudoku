@@ -154,6 +154,23 @@ go build -o sudoku cmd/sudoku-tunnel/main.go
 ```
 此时直接用 TCP 客户端连接 `<server>:8081` 即可（每个 `reverse.listen` 仅支持 1 条 TCP 路由）。
 
+TCP-over-WebSocket（可走 HTTP/CDN 的端口转发）：
+```json
+{
+  "reverse": {
+    "routes": [{ "path": "/ssh", "target": "127.0.0.1:22" }]
+  }
+}
+```
+本地转发器：
+```bash
+./sudoku -rev-dial wss://example.com:8081/ssh -rev-listen 127.0.0.1:2222
+ssh -p 2222 127.0.0.1
+```
+说明：
+- 隧道入口是 **精确路径** `/ssh`（无尾斜杠），通过 WebSocket 子协议 `sudoku-tcp-v1` 识别。
+- 非 `sudoku-tcp-v1` 的 WebSocket 仍会按普通反向代理转发到上游应用。
+
 ### Docker（服务端）
 本地构建：
 ```bash

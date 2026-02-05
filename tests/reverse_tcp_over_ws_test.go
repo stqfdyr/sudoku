@@ -1,15 +1,17 @@
 package tests
 
 import (
+	"context"
 	"io"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/saba-futai/sudoku/internal/config"
 )
 
-func TestReverseProxy_TCP_DefaultRoute(t *testing.T) {
+func TestReverseProxy_TCPOverWebSocket_Subpath(t *testing.T) {
 	originLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen origin: %v", err)
@@ -50,35 +52,34 @@ func TestReverseProxy_TCP_DefaultRoute(t *testing.T) {
 	clientCfg := newTestClientConfig(clientPort, localServerAddr(serverPort), clientKey)
 	clientCfg.Reverse = &config.ReverseConfig{
 		ClientID: "r4s",
-		Routes: []config.ReverseRoute{
-			// Path empty => raw TCP reverse on reverse.listen.
-			{Target: originAddr},
-		},
+		Routes:   []config.ReverseRoute{{Path: "/ssh", Target: originAddr}},
 	}
 	startSudokuClient(t, clientCfg)
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		c, err := net.DialTimeout("tcp", reverseListen, 200*time.Millisecond)
-		if err != nil {
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-		_ = c.SetDeadline(time.Now().Add(2 * time.Second))
-		if _, err := c.Write([]byte("ping")); err != nil {
-			_ = c.Close()
-			time.Sleep(50 * time.Millisecond)
-			continue
-		}
-		buf := make([]byte, 4)
-		_, err = io.ReadFull(c, buf)
-		_ = c.Close()
-		if err == nil && string(buf) == "ping" {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+	ws, _, err := websocket.Dial(ctx, "ws://"+reverseListen+"/ssh", &websocket.DialOptions{
+		Subprotocols:    []string{"sudoku-tcp-v1"},
+		CompressionMode: websocket.CompressionDisabled,
+	})
+	if err != nil {
+		t.Fatalf("reverse tcp ws dial: %v", err)
+	}
+	defer ws.Close(websocket.StatusNormalClosure, "")
+	if ws.Subprotocol() != "sudoku-tcp-v1" {
+		t.Fatalf("expected negotiated subprotocol, got %q", ws.Subprotocol())
 	}
 
-	t.Fatalf("reverse tcp proxy did not become ready")
+	wsConn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	if _, err := wsConn.Write([]byte("ping")); err != nil {
+		t.Fatalf("reverse tcp ws write: %v", err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(wsConn, buf); err != nil {
+		t.Fatalf("reverse tcp ws read: %v", err)
+	}
+	if string(buf) != "ping" {
+		t.Fatalf("unexpected echo: %q", string(buf))
+	}
 }

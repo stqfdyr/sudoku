@@ -3,8 +3,14 @@
 ## Unreleased
 - TBD
 
-## v0.2.2（2026-01-30）
+## v0.2.2（2026-02-05）
+- `reverse`: 子路径反代彻底可用：修复资源 404、SVG/图片无法加载、WebSocket 无法建立等问题；增强 `Location`/`Set-Cookie Path` 重写，并支持在 `Content-Type` 缺失时按路径后缀推断是否可重写。
+- `reverse`: 新增 TCP-over-WebSocket（CDN/反代友好）：在每个路由的精确路径 `/<route>`（无尾斜杠）上协商子协议 `sudoku-tcp-v1` 并转发任意 TCP 到客户端 `target`。
 - `reverse`: 反向代理支持纯 TCP 转发：当 `reverse.routes[].path` 为空时，`reverse.listen` 上的非 HTTP 入站连接会被当作原始 TCP 流量转发到客户端目标（每个入口仅支持 1 条 TCP 路由）。
+- `cli`: 新增内置本地端口转发器：`-rev-dial` / `-rev-listen` / `-rev-insecure`（用于把本地 TCP 通过 TCP-over-WebSocket 隧道转发）。
+- `tests`: 新增 BDD 场景测试，模拟 TLS Edge/CDN 与 HTTPMask 隧道，验证 HTTP 子路径与 TCP-over-WS 可用性。
+- `deps`: 替换弃用的 `nhooyr.io/websocket` 为 `github.com/coder/websocket`。
+- `docs`: 补充反向代理与 TCP-over-WebSocket 的使用说明（含配置与命令示例）。
 
 ## v0.2.1（2026-01-30）
 - `reverse`: 修复子路径挂载场景（如 `/gitea`）下静态资源/跳转路径丢前缀的问题：在 `strip_prefix=true` 时自动回写 `Location`、`Set-Cookie Path` 并重写 HTML/CSS/JS 中的根路径引用（如 `"/assets"`、`url(/assets)`）。

@@ -39,6 +39,7 @@ type routeEntry struct {
 	target      string
 	stripPrefix bool
 	hostHeader  string
+	mux         *tunnel.MuxClient
 	proxy       *httputil.ReverseProxy
 }
 
@@ -134,6 +135,7 @@ func (m *Manager) RegisterSession(clientID string, mux *tunnel.MuxClient, routes
 			target:      target,
 			stripPrefix: strip,
 			hostHeader:  hostHeader,
+			mux:         mux,
 		}
 		entry.proxy = newRouteProxy(prefix, target, strip, hostHeader, mux)
 		m.routes[prefix] = entry
@@ -231,10 +233,18 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path = r.URL.Path
 	}
 
-	// Ensure the route root is treated as a directory. Many apps use relative asset URLs
-	// (e.g. "static/app.js"); without a trailing slash, browsers resolve them to "/static/...".
-	// Redirecting keeps the app working under a subpath like "/gitea/" or "/netdata/".
-	if entry.prefix != "" && entry.prefix != "/" && path == entry.prefix && r.Method != "" {
+	// /<prefix> (no trailing slash) is reserved for Sudoku's TCP-over-WS tunnel when the client
+	// explicitly negotiates the "sudoku-tcp-v1" subprotocol. Any other WS upgrade should fall
+	// through to the normal reverse proxy (and must not be redirected).
+	if path == entry.prefix && isWebSocketUpgrade(r) {
+		if entry.mux != nil && websocketClientOffersSubprotocol(r, sudokuTCPSubprotocol) {
+			serveSudokuTCPTunnel(w, r, entry.mux, entry.target)
+			return
+		}
+	} else if entry.prefix != "" && entry.prefix != "/" && path == entry.prefix && r.Method != "" {
+		// Ensure the route root is treated as a directory. Many apps use relative asset URLs
+		// (e.g. "static/app.js"); without a trailing slash, browsers resolve them to "/static/...".
+		// Redirecting keeps the app working under a subpath like "/gitea/" or "/netdata/".
 		switch r.Method {
 		case http.MethodGet, http.MethodHead:
 			u := *r.URL
@@ -244,6 +254,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 		}
 	}
+
 	entry.proxy.ServeHTTP(w, r)
 }
 
@@ -404,14 +415,73 @@ func rewriteLocation(resp *http.Response, prefix string) {
 	if loc == "" {
 		return
 	}
-	// Only rewrite root-absolute redirects.
-	if !strings.HasPrefix(loc, "/") || strings.HasPrefix(loc, "//") {
+
+	// Root-absolute redirect.
+	if strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") {
+		u, err := url.Parse(loc)
+		if err != nil || u == nil || u.Path == "" || !strings.HasPrefix(u.Path, "/") {
+			return
+		}
+		if pathPrefixMatch(u.Path, prefix) {
+			return
+		}
+		u.Path = prefix + u.Path
+		u.RawPath = ""
+		resp.Header.Set("Location", u.String())
 		return
 	}
-	if strings.HasPrefix(loc, prefix+"/") || loc == prefix {
+
+	// Absolute redirect to the same host.
+	if strings.HasPrefix(loc, "http://") || strings.HasPrefix(loc, "https://") {
+		u, err := url.Parse(loc)
+		if err != nil || u.Host == "" || u.Path == "" || !strings.HasPrefix(u.Path, "/") {
+			return
+		}
+		if strings.HasPrefix(u.Path, prefix+"/") || u.Path == prefix {
+			return
+		}
+		if resp.Request == nil || !sameHTTPHost(resp.Request.Host, u.Host, u.Scheme) {
+			return
+		}
+		u.Path = prefix + u.Path
+		u.RawPath = ""
+		resp.Header.Set("Location", u.String())
 		return
 	}
-	resp.Header.Set("Location", prefix+loc)
+}
+
+func sameHTTPHost(reqHost, locHost, scheme string) bool {
+	reqHost = strings.TrimSpace(reqHost)
+	locHost = strings.TrimSpace(locHost)
+	if reqHost == "" || locHost == "" {
+		return false
+	}
+
+	reqURL := &url.URL{Host: reqHost}
+	locURL := &url.URL{Host: locHost}
+
+	if !strings.EqualFold(reqURL.Hostname(), locURL.Hostname()) {
+		return false
+	}
+
+	reqPort := reqURL.Port()
+	if reqPort == "" {
+		// If the request Host has no port, accept same-host redirects regardless of default port.
+		return true
+	}
+
+	locPort := locURL.Port()
+	if locPort == "" {
+		switch strings.ToLower(strings.TrimSpace(scheme)) {
+		case "https":
+			locPort = "443"
+		case "http":
+			locPort = "80"
+		default:
+			return false
+		}
+	}
+	return reqPort == locPort
 }
 
 func rewriteSetCookiePath(resp *http.Response, prefix string) {
@@ -471,6 +541,9 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 	}
 
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
+	if ct == "" && resp.Request != nil && resp.Request.URL != nil {
+		ct = inferContentTypeFromPath(resp.Request.URL.Path)
+	}
 	if ct == "" {
 		return nil
 	}
@@ -482,11 +555,6 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 	}
 	if ct == "text/event-stream" {
 		// Never buffer/modify SSE.
-		return nil
-	}
-	if isJavaScriptContentType(ct) {
-		// JS rewriting is fragile (regex literals, minifiers, etc.) and can break apps.
-		// Instead, rely on Referer-based routing for root-absolute API/asset calls.
 		return nil
 	}
 
@@ -578,6 +646,36 @@ func rewriteTextBody(resp *http.Response, prefix string) error {
 	return nil
 }
 
+func inferContentTypeFromPath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if i := strings.Index(p, "?"); i >= 0 {
+		p = p[:i]
+	}
+	if p == "" {
+		return ""
+	}
+	// Keep this conservative: only infer types we know how to rewrite safely.
+	switch {
+	case strings.HasSuffix(p, ".html") || strings.HasSuffix(p, ".htm"):
+		return "text/html"
+	case strings.HasSuffix(p, ".css"):
+		return "text/css"
+	case strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".mjs"):
+		return "application/javascript"
+	case strings.HasSuffix(p, ".json"):
+		return "application/json"
+	case strings.HasSuffix(p, ".webmanifest"):
+		return "application/manifest+json"
+	case strings.HasSuffix(p, ".svg"):
+		return "image/svg+xml"
+	default:
+		return ""
+	}
+}
+
 func rewriteTextPayload(contentType string, in []byte, prefix string) []byte {
 	if in == nil {
 		return nil
@@ -595,18 +693,10 @@ func rewriteTextPayload(contentType string, in []byte, prefix string) []byte {
 }
 
 func rewriteHTMLSrcset(in []byte, prefix string) []byte {
-	prefix = strings.TrimSpace(prefix)
-	if prefix == "" || prefix == "/" {
+	p := normalizedPrefixBytes(prefix)
+	if p == nil {
 		return in
 	}
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	prefix = strings.TrimRight(prefix, "/")
-	if prefix == "" || prefix == "/" {
-		return in
-	}
-	p := []byte(prefix)
 
 	var (
 		out      bytes.Buffer
@@ -714,7 +804,7 @@ func rewriteSrcsetValue(val []byte, prefix []byte) []byte {
 			continue
 		}
 
-		if bytes.HasPrefix(val[i:], prefix) {
+		if urlHasPathPrefix(val[i:], prefix) {
 			continue
 		}
 
@@ -755,32 +845,11 @@ func isRewritableContentType(ct string) bool {
 	}
 }
 
-func isJavaScriptContentType(ct string) bool {
-	switch ct {
-	case "application/javascript":
-		return true
-	case "application/x-javascript":
-		return true
-	case "text/javascript":
-		return true
-	default:
-		return false
-	}
-}
-
 func rewriteRootAbsolutePaths(in []byte, prefix string) []byte {
-	prefix = strings.TrimSpace(prefix)
-	if prefix == "" || prefix == "/" {
+	p := normalizedPrefixBytes(prefix)
+	if p == nil {
 		return in
 	}
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	prefix = strings.TrimRight(prefix, "/")
-	if prefix == "" || prefix == "/" {
-		return in
-	}
-	p := []byte(prefix)
 
 	var (
 		out  bytes.Buffer
@@ -799,7 +868,7 @@ func rewriteRootAbsolutePaths(in []byte, prefix string) []byte {
 			// Protocol-relative URL ("//example.com/...").
 			continue
 		}
-		if bytes.HasPrefix(in[i:], p) {
+		if urlHasPathPrefix(in[i:], p) {
 			continue
 		}
 		out.Write(in[last:i])
@@ -812,6 +881,39 @@ func rewriteRootAbsolutePaths(in []byte, prefix string) []byte {
 	}
 	out.Write(in[last:])
 	return out.Bytes()
+}
+
+func urlHasPathPrefix(u []byte, prefix []byte) bool {
+	if len(u) == 0 || len(prefix) == 0 {
+		return false
+	}
+	if !bytes.HasPrefix(u, prefix) {
+		return false
+	}
+	if len(u) == len(prefix) {
+		return true
+	}
+	switch u[len(prefix)] {
+	case '/', '?', '#':
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizedPrefixBytes(prefix string) []byte {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" || prefix == "/" {
+		return nil
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix == "" || prefix == "/" {
+		return nil
+	}
+	return []byte(prefix)
 }
 
 func isRootPathContext(b []byte, slashIndex int) bool {

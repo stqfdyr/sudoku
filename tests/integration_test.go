@@ -17,7 +17,6 @@ import (
 	"github.com/saba-futai/sudoku/internal/app"
 	"github.com/saba-futai/sudoku/internal/config"
 	"github.com/saba-futai/sudoku/internal/protocol"
-	"github.com/saba-futai/sudoku/pkg/crypto"
 	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
 )
 
@@ -591,6 +590,7 @@ func runTCPTransfer(t *testing.T, asciiMode string, pureDownlink bool, key strin
 	upChan := make(chan []byte, 256)
 	downChan := make(chan []byte, 256)
 	startDualMiddleman(middlemanPort, serverPort, upChan, downChan)
+	waitForPort(t, middlemanPort)
 
 	clientCfg := &config.Config{
 		Mode:               "client",
@@ -1072,13 +1072,7 @@ func TestConcurrentPackedSessions(t *testing.T) {
 }
 
 func TestEd25519KeyInterop(t *testing.T) {
-	pair, err := crypto.GenerateMasterKey()
-	if err != nil {
-		t.Fatalf("keygen failed: %v", err)
-	}
-
-	publicKey := crypto.EncodePoint(pair.Public)
-	privateKey := crypto.EncodeScalar(pair.Private)
+	publicKey, privateKey := newTestKeys(t)
 
 	ports, _ := getFreePorts(3)
 	echoPort := ports[0]

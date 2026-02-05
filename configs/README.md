@@ -115,13 +115,33 @@
 用于让 NAT 后的客户端把本地服务通过隧道暴露给服务端。
 
 - 服务端：`reverse.listen`（如 `":8081"`）开启一个入口：
-  - HTTP：通过 `http://<server>:8081/<path>/...` 访问
-  - TCP：当存在 `path=""` 的路由时，非 HTTP 的入站连接会被当作**纯 TCP**转发到该目标
+  - HTTP 子路径反代：通过 `http://<server>:8081/<path>/...` 访问（Web UI 建议用 `/<path>/` 带尾斜杠）
+  - TCP-over-WebSocket（更适合 CDN/反代）：对每个 `path != ""` 的路由，精确路径 `/<path>`（**无尾斜杠**）可建立 WebSocket 隧道，并协商子协议 `sudoku-tcp-v1` 承载任意 TCP 转发
+  - 纯 TCP：当存在 `path=""` 的路由时，`reverse.listen` 上的非 HTTP 入站连接会被当作**纯 TCP**转发到该目标（每个入口仅支持 1 条 TCP 路由）
 - 客户端：`reverse.routes` 声明要暴露的本地服务：
   - `reverse.routes[].path`：对外路径前缀（如 `"/gitea"`）
   - `reverse.routes[].target`：客户端本地 `host:port`（如 `"127.0.0.1:3000"`）
-  - `reverse.routes[].strip_prefix`：是否去掉前缀后再转发（默认 `true`）
+  - `reverse.routes[].strip_prefix`：是否去掉前缀后再转发（默认 `true`；开启后会自动重写 `Location`/`Set-Cookie Path` 以及 HTML/CSS/JS/SVG 内的根路径引用以适配子路径挂载）
   - `reverse.routes[].host_header`：可选，覆盖转发时的 `Host`
+
+示例（客户端暴露 Web + SSH）：
+```json
+{
+  "reverse": {
+    "routes": [
+      { "path": "/gitea", "target": "127.0.0.1:3000" },
+      { "path": "/ssh", "target": "127.0.0.1:22" }
+    ]
+  }
+}
+```
+
+- HTTP：打开 `http://<server>:8081/gitea/`
+- TCP-over-WebSocket：用内置转发器把本地端口转发到 `wss://<server>:8081/ssh`（注意 `/ssh` **不要**带尾斜杠）：
+```bash
+./sudoku -rev-dial wss://example.com:8081/ssh -rev-listen 127.0.0.1:2222
+ssh -p 2222 127.0.0.1
+```
 
 纯 TCP 反代：
 - 将 `reverse.routes[].path` 置空（或省略该字段）即可启用 TCP 映射：`{ "target": "10.0.0.1:25565" }`

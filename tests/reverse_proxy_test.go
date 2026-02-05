@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/saba-futai/sudoku/internal/config"
-	"github.com/saba-futai/sudoku/pkg/crypto"
 )
 
 func waitForAddr(t testing.TB, addr string) {
@@ -49,12 +48,7 @@ func TestReverseProxy_PathPrefix(t *testing.T) {
 	defer origin.Close()
 	originAddr := strings.TrimPrefix(origin.URL, "http://")
 
-	pair, err := crypto.GenerateMasterKey()
-	if err != nil {
-		t.Fatalf("keygen failed: %v", err)
-	}
-	serverKey := crypto.EncodePoint(pair.Public)
-	clientKey := crypto.EncodeScalar(pair.Private)
+	serverKey, clientKey := newTestKeys(t)
 
 	ports, err := getFreePorts(3)
 	if err != nil {
@@ -64,56 +58,17 @@ func TestReverseProxy_PathPrefix(t *testing.T) {
 	clientPort := ports[1]
 	reversePort := ports[2]
 
-	reverseListen := fmt.Sprintf("127.0.0.1:%d", reversePort)
+	reverseListen := localServerAddr(reversePort)
 
-	serverCfg := &config.Config{
-		Mode:               "server",
-		Transport:          "tcp",
-		LocalPort:          serverPort,
-		FallbackAddr:       "",
-		Key:                serverKey,
-		AEAD:               "chacha20-poly1305",
-		SuspiciousAction:   "fallback",
-		PaddingMin:         0,
-		PaddingMax:         0,
-		ASCII:              "prefer_ascii",
-		CustomTable:        "xpxvvpvv",
-		EnablePureDownlink: true,
-		HTTPMask: config.HTTPMaskConfig{
-			Disable: true,
-		},
-		Reverse: &config.ReverseConfig{
-			Listen: reverseListen,
-		},
-	}
+	serverCfg := newTestServerConfig(serverPort, serverKey)
+	serverCfg.Reverse = &config.ReverseConfig{Listen: reverseListen}
 	startSudokuServer(t, serverCfg)
 	waitForAddr(t, reverseListen)
 
-	clientCfg := &config.Config{
-		Mode:               "client",
-		Transport:          "tcp",
-		LocalPort:          clientPort,
-		ServerAddress:      fmt.Sprintf("127.0.0.1:%d", serverPort),
-		Key:                clientKey,
-		AEAD:               "chacha20-poly1305",
-		PaddingMin:         0,
-		PaddingMax:         0,
-		ASCII:              "prefer_ascii",
-		CustomTable:        "xpxvvpvv",
-		EnablePureDownlink: true,
-		ProxyMode:          "direct",
-		HTTPMask: config.HTTPMaskConfig{
-			Disable: true,
-		},
-		Reverse: &config.ReverseConfig{
-			ClientID: "r4s",
-			Routes: []config.ReverseRoute{
-				{
-					Path:   "/gitea",
-					Target: originAddr,
-				},
-			},
-		},
+	clientCfg := newTestClientConfig(clientPort, localServerAddr(serverPort), clientKey)
+	clientCfg.Reverse = &config.ReverseConfig{
+		ClientID: "r4s",
+		Routes:   []config.ReverseRoute{{Path: "/gitea", Target: originAddr}},
 	}
 	startSudokuClient(t, clientCfg)
 
@@ -187,12 +142,7 @@ func TestReverseProxy_PathPrefix_Srcset(t *testing.T) {
 	defer origin.Close()
 	originAddr := strings.TrimPrefix(origin.URL, "http://")
 
-	pair, err := crypto.GenerateMasterKey()
-	if err != nil {
-		t.Fatalf("keygen failed: %v", err)
-	}
-	serverKey := crypto.EncodePoint(pair.Public)
-	clientKey := crypto.EncodeScalar(pair.Private)
+	serverKey, clientKey := newTestKeys(t)
 
 	ports, err := getFreePorts(3)
 	if err != nil {
@@ -202,56 +152,17 @@ func TestReverseProxy_PathPrefix_Srcset(t *testing.T) {
 	clientPort := ports[1]
 	reversePort := ports[2]
 
-	reverseListen := fmt.Sprintf("127.0.0.1:%d", reversePort)
+	reverseListen := localServerAddr(reversePort)
 
-	serverCfg := &config.Config{
-		Mode:               "server",
-		Transport:          "tcp",
-		LocalPort:          serverPort,
-		FallbackAddr:       "",
-		Key:                serverKey,
-		AEAD:               "chacha20-poly1305",
-		SuspiciousAction:   "fallback",
-		PaddingMin:         0,
-		PaddingMax:         0,
-		ASCII:              "prefer_ascii",
-		CustomTable:        "xpxvvpvv",
-		EnablePureDownlink: true,
-		HTTPMask: config.HTTPMaskConfig{
-			Disable: true,
-		},
-		Reverse: &config.ReverseConfig{
-			Listen: reverseListen,
-		},
-	}
+	serverCfg := newTestServerConfig(serverPort, serverKey)
+	serverCfg.Reverse = &config.ReverseConfig{Listen: reverseListen}
 	startSudokuServer(t, serverCfg)
 	waitForAddr(t, reverseListen)
 
-	clientCfg := &config.Config{
-		Mode:               "client",
-		Transport:          "tcp",
-		LocalPort:          clientPort,
-		ServerAddress:      fmt.Sprintf("127.0.0.1:%d", serverPort),
-		Key:                clientKey,
-		AEAD:               "chacha20-poly1305",
-		PaddingMin:         0,
-		PaddingMax:         0,
-		ASCII:              "prefer_ascii",
-		CustomTable:        "xpxvvpvv",
-		EnablePureDownlink: true,
-		ProxyMode:          "direct",
-		HTTPMask: config.HTTPMaskConfig{
-			Disable: true,
-		},
-		Reverse: &config.ReverseConfig{
-			ClientID: "r4s",
-			Routes: []config.ReverseRoute{
-				{
-					Path:   "/gitea",
-					Target: originAddr,
-				},
-			},
-		},
+	clientCfg := newTestClientConfig(clientPort, localServerAddr(serverPort), clientKey)
+	clientCfg.Reverse = &config.ReverseConfig{
+		ClientID: "r4s",
+		Routes:   []config.ReverseRoute{{Path: "/gitea", Target: originAddr}},
 	}
 	startSudokuClient(t, clientCfg)
 
@@ -292,12 +203,7 @@ func TestReverseProxy_RefererFallback_RootPaths(t *testing.T) {
 	defer origin.Close()
 	originAddr := strings.TrimPrefix(origin.URL, "http://")
 
-	pair, err := crypto.GenerateMasterKey()
-	if err != nil {
-		t.Fatalf("keygen failed: %v", err)
-	}
-	serverKey := crypto.EncodePoint(pair.Public)
-	clientKey := crypto.EncodeScalar(pair.Private)
+	serverKey, clientKey := newTestKeys(t)
 
 	ports, err := getFreePorts(3)
 	if err != nil {
@@ -307,62 +213,23 @@ func TestReverseProxy_RefererFallback_RootPaths(t *testing.T) {
 	clientPort := ports[1]
 	reversePort := ports[2]
 
-	reverseListen := fmt.Sprintf("127.0.0.1:%d", reversePort)
+	reverseListen := localServerAddr(reversePort)
 
-	serverCfg := &config.Config{
-		Mode:               "server",
-		Transport:          "tcp",
-		LocalPort:          serverPort,
-		FallbackAddr:       "",
-		Key:                serverKey,
-		AEAD:               "chacha20-poly1305",
-		SuspiciousAction:   "fallback",
-		PaddingMin:         0,
-		PaddingMax:         0,
-		ASCII:              "prefer_ascii",
-		CustomTable:        "xpxvvpvv",
-		EnablePureDownlink: true,
-		HTTPMask: config.HTTPMaskConfig{
-			Disable: true,
-		},
-		Reverse: &config.ReverseConfig{
-			Listen: reverseListen,
-		},
-	}
+	serverCfg := newTestServerConfig(serverPort, serverKey)
+	serverCfg.Reverse = &config.ReverseConfig{Listen: reverseListen}
 	startSudokuServer(t, serverCfg)
 	waitForAddr(t, reverseListen)
 
-	clientCfg := &config.Config{
-		Mode:               "client",
-		Transport:          "tcp",
-		LocalPort:          clientPort,
-		ServerAddress:      fmt.Sprintf("127.0.0.1:%d", serverPort),
-		Key:                clientKey,
-		AEAD:               "chacha20-poly1305",
-		PaddingMin:         0,
-		PaddingMax:         0,
-		ASCII:              "prefer_ascii",
-		CustomTable:        "xpxvvpvv",
-		EnablePureDownlink: true,
-		ProxyMode:          "direct",
-		HTTPMask: config.HTTPMaskConfig{
-			Disable: true,
-		},
-		Reverse: &config.ReverseConfig{
-			ClientID: "r4s",
-			Routes: []config.ReverseRoute{
-				{
-					Path:   "/gitea",
-					Target: originAddr,
-				},
-			},
-		},
+	clientCfg := newTestClientConfig(clientPort, localServerAddr(serverPort), clientKey)
+	clientCfg.Reverse = &config.ReverseConfig{
+		ClientID: "r4s",
+		Routes:   []config.ReverseRoute{{Path: "/gitea", Target: originAddr}},
 	}
 	startSudokuClient(t, clientCfg)
 
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 
-	// JS should not be rewritten (to avoid breaking regex/minified code).
+	// JS should be rewritten safely so root-absolute paths work under a subpath (e.g. WebSocket "/ws").
 	resp, err := httpClient.Get(fmt.Sprintf("http://%s/gitea/app.js", reverseListen))
 	if err != nil {
 		t.Fatalf("reverse js: %v", err)
@@ -373,8 +240,8 @@ func TestReverseProxy_RefererFallback_RootPaths(t *testing.T) {
 		t.Fatalf("reverse js status: %d", resp.StatusCode)
 	}
 	js := string(body)
-	if !strings.Contains(js, "fetch(`/api/ping`)") {
-		t.Fatalf("expected js to remain unchanged, got: %q", js)
+	if !strings.Contains(js, "fetch(`/gitea/api/ping`)") {
+		t.Fatalf("expected js root path to be rewritten, got: %q", js)
 	}
 	if !strings.Contains(js, "const re=/'\\\\/api\\\\/ping'/g") {
 		t.Fatalf("expected regex literal to remain unchanged, got: %q", js)
@@ -439,12 +306,7 @@ func TestReverseProxy_PathPrefix_GzipOrigin(t *testing.T) {
 	defer origin.Close()
 	originAddr := strings.TrimPrefix(origin.URL, "http://")
 
-	pair, err := crypto.GenerateMasterKey()
-	if err != nil {
-		t.Fatalf("keygen failed: %v", err)
-	}
-	serverKey := crypto.EncodePoint(pair.Public)
-	clientKey := crypto.EncodeScalar(pair.Private)
+	serverKey, clientKey := newTestKeys(t)
 
 	ports, err := getFreePorts(3)
 	if err != nil {
@@ -454,56 +316,17 @@ func TestReverseProxy_PathPrefix_GzipOrigin(t *testing.T) {
 	clientPort := ports[1]
 	reversePort := ports[2]
 
-	reverseListen := fmt.Sprintf("127.0.0.1:%d", reversePort)
+	reverseListen := localServerAddr(reversePort)
 
-	serverCfg := &config.Config{
-		Mode:               "server",
-		Transport:          "tcp",
-		LocalPort:          serverPort,
-		FallbackAddr:       "",
-		Key:                serverKey,
-		AEAD:               "chacha20-poly1305",
-		SuspiciousAction:   "fallback",
-		PaddingMin:         0,
-		PaddingMax:         0,
-		ASCII:              "prefer_ascii",
-		CustomTable:        "xpxvvpvv",
-		EnablePureDownlink: true,
-		HTTPMask: config.HTTPMaskConfig{
-			Disable: true,
-		},
-		Reverse: &config.ReverseConfig{
-			Listen: reverseListen,
-		},
-	}
+	serverCfg := newTestServerConfig(serverPort, serverKey)
+	serverCfg.Reverse = &config.ReverseConfig{Listen: reverseListen}
 	startSudokuServer(t, serverCfg)
 	waitForAddr(t, reverseListen)
 
-	clientCfg := &config.Config{
-		Mode:               "client",
-		Transport:          "tcp",
-		LocalPort:          clientPort,
-		ServerAddress:      fmt.Sprintf("127.0.0.1:%d", serverPort),
-		Key:                clientKey,
-		AEAD:               "chacha20-poly1305",
-		PaddingMin:         0,
-		PaddingMax:         0,
-		ASCII:              "prefer_ascii",
-		CustomTable:        "xpxvvpvv",
-		EnablePureDownlink: true,
-		ProxyMode:          "direct",
-		HTTPMask: config.HTTPMaskConfig{
-			Disable: true,
-		},
-		Reverse: &config.ReverseConfig{
-			ClientID: "r4s",
-			Routes: []config.ReverseRoute{
-				{
-					Path:   "/gitea",
-					Target: originAddr,
-				},
-			},
-		},
+	clientCfg := newTestClientConfig(clientPort, localServerAddr(serverPort), clientKey)
+	clientCfg.Reverse = &config.ReverseConfig{
+		ClientID: "r4s",
+		Routes:   []config.ReverseRoute{{Path: "/gitea", Target: originAddr}},
 	}
 	startSudokuClient(t, clientCfg)
 
@@ -558,8 +381,8 @@ func TestReverseProxy_PathPrefix_GzipOrigin(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("reverse js status: %d", resp.StatusCode)
 	}
-	if !strings.Contains(string(jsBytes), `fetch("/api/ping")`) {
-		t.Fatalf("expected js to remain unchanged, got: %q", string(jsBytes))
+	if !strings.Contains(string(jsBytes), `fetch("/gitea/api/ping")`) {
+		t.Fatalf("expected rewritten js root path, got: %q", string(jsBytes))
 	}
 
 	// Root-absolute requests should route correctly using Referer.
