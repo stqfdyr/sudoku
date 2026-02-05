@@ -143,6 +143,10 @@
 ssh -p 2222 127.0.0.1
 ```
 
+注意：
+- Web UI 一般应使用 `/<path>/`（目录形式，带尾斜杠），否则浏览器解析相对资源会跑到根路径。
+- `/<path>`（**无尾斜杠**）被保留用于 TCP-over-WebSocket 入口：仅当客户端协商子协议 `sudoku-tcp-v1` 时才会进入 TCP 隧道；否则会按普通 HTTP/WebSocket 反代到上游应用（应用自身的 WS 不受影响）。
+
 纯 TCP 反代：
 - 将 `reverse.routes[].path` 置空（或省略该字段）即可启用 TCP 映射：`{ "target": "10.0.0.1:25565" }`
 - 该模式每个 `reverse.listen` 仅支持 **1 条** TCP 路由（因为原始 TCP 没有“路径”可以区分多服务）

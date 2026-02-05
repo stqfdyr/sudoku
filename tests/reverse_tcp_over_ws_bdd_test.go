@@ -2,48 +2,39 @@ package tests
 
 import (
 	"context"
-	"io"
+	"crypto/tls"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/saba-futai/sudoku/internal/config"
+	"github.com/saba-futai/sudoku/internal/reverse"
 	"golang.org/x/crypto/ssh"
 )
 
-func TestReverseProxy_TCPOverWebSocket_Subpath(t *testing.T) {
-	originLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen origin: %v", err)
-	}
-	defer originLn.Close()
-
-	originAddr := originLn.Addr().String()
-	go func() {
-		for {
-			c, err := originLn.Accept()
-			if err != nil {
-				return
-			}
-			go func(conn net.Conn) {
-				defer conn.Close()
-				_, _ = io.Copy(conn, conn)
-			}(c)
-		}
-	}()
+func TestReverseProxy_TCPOverWebSocket_Subpath_SSH_Forwarder(t *testing.T) {
+	sshSrv := startTestSSHServer(t, "127.0.0.1:0", "u", "p")
+	defer sshSrv.Close()
 
 	serverKey, clientKey := newTestKeys(t)
 
-	ports, err := getFreePorts(3)
+	ports, err := getFreePorts(4)
 	if err != nil {
 		t.Fatalf("ports: %v", err)
 	}
 	serverPort := ports[0]
 	clientPort := ports[1]
 	reversePort := ports[2]
+	forwardPort := ports[3]
 
 	reverseListen := localServerAddr(reversePort)
+	forwardListen := localServerAddr(forwardPort)
 
 	serverCfg := newTestServerConfig(serverPort, serverKey)
 	serverCfg.Reverse = &config.ReverseConfig{Listen: reverseListen}
@@ -53,40 +44,56 @@ func TestReverseProxy_TCPOverWebSocket_Subpath(t *testing.T) {
 	clientCfg := newTestClientConfig(clientPort, localServerAddr(serverPort), clientKey)
 	clientCfg.Reverse = &config.ReverseConfig{
 		ClientID: "r4s",
-		Routes:   []config.ReverseRoute{{Path: "/ssh", Target: originAddr}},
+		Routes:   []config.ReverseRoute{{Path: "/ssh", Target: sshSrv.Addr()}},
 	}
 	startSudokuClient(t, clientCfg)
 	waitForReverseRouteReady(t, reverseListen, "/ssh")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	dialURL := "ws://" + reverseListen + "/ssh"
+	go func() {
+		_ = reverse.ServeLocalWSForward(forwardListen, dialURL, false)
+	}()
+	waitForAddr(t, forwardListen)
 
-	ws, _, err := websocket.Dial(ctx, "ws://"+reverseListen+"/ssh", &websocket.DialOptions{
-		Subprotocols:    []string{"sudoku-tcp-v1"},
-		CompressionMode: websocket.CompressionDisabled,
-	})
+	sshCfg := &ssh.ClientConfig{
+		User:            "u",
+		Auth:            []ssh.AuthMethod{ssh.Password("p")},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         5 * time.Second,
+	}
+
+	rawConn, err := net.DialTimeout("tcp", forwardListen, 5*time.Second)
 	if err != nil {
-		t.Fatalf("reverse tcp ws dial: %v", err)
+		t.Fatalf("ssh tcp dial: %v", err)
 	}
-	defer ws.Close(websocket.StatusNormalClosure, "")
-	if ws.Subprotocol() != "sudoku-tcp-v1" {
-		t.Fatalf("expected negotiated subprotocol, got %q", ws.Subprotocol())
-	}
+	_ = rawConn.SetDeadline(time.Now().Add(10 * time.Second))
 
-	wsConn := websocket.NetConn(ctx, ws, websocket.MessageBinary)
-	if _, err := wsConn.Write([]byte("ping")); err != nil {
-		t.Fatalf("reverse tcp ws write: %v", err)
+	cconn, chans, reqs, err := ssh.NewClientConn(rawConn, forwardListen, sshCfg)
+	if err != nil {
+		_ = rawConn.Close()
+		t.Fatalf("ssh handshake: %v", err)
 	}
-	buf := make([]byte, 4)
-	if _, err := io.ReadFull(wsConn, buf); err != nil {
-		t.Fatalf("reverse tcp ws read: %v", err)
+	_ = rawConn.SetDeadline(time.Time{})
+
+	client := ssh.NewClient(cconn, chans, reqs)
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("ssh session: %v", err)
 	}
-	if string(buf) != "ping" {
-		t.Fatalf("unexpected echo: %q", string(buf))
+	defer sess.Close()
+
+	out, err := sess.CombinedOutput("echo hello")
+	if err != nil {
+		t.Fatalf("ssh exec: %v (out=%q)", err, string(out))
+	}
+	if string(out) != "echo hello" {
+		t.Fatalf("unexpected output: %q", string(out))
 	}
 }
 
-func TestReverseProxy_TCPOverWebSocket_Subpath_SSH(t *testing.T) {
+func TestReverseProxy_TCPOverWebSocket_Subpath_SSH_BehindTLSEdge(t *testing.T) {
 	sshSrv := startTestSSHServer(t, "127.0.0.1:0", "u", "p")
 	defer sshSrv.Close()
 
@@ -115,15 +122,29 @@ func TestReverseProxy_TCPOverWebSocket_Subpath_SSH(t *testing.T) {
 	startSudokuClient(t, clientCfg)
 	waitForReverseRouteReady(t, reverseListen, "/ssh")
 
+	// TLS edge proxy (CDN-like) in front of reverse.listen.
+	targetURL, _ := url.Parse("http://" + reverseListen)
+	rp := httputil.NewSingleHostReverseProxy(targetURL)
+	edge := httptest.NewTLSServer(rp)
+	defer edge.Close()
+
+	wsHTTPClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	ws, _, err := websocket.Dial(ctx, "ws://"+reverseListen+"/ssh", &websocket.DialOptions{
+	dialURL := strings.Replace(edge.URL, "https://", "wss://", 1) + "/ssh"
+	ws, _, err := websocket.Dial(ctx, dialURL, &websocket.DialOptions{
 		Subprotocols:    []string{"sudoku-tcp-v1"},
 		CompressionMode: websocket.CompressionDisabled,
+		HTTPClient:      wsHTTPClient,
 	})
 	if err != nil {
-		t.Fatalf("reverse tcp ws dial: %v", err)
+		t.Fatalf("reverse tcp wss dial: %v", err)
 	}
 	defer ws.Close(websocket.StatusNormalClosure, "")
 	if ws.Subprotocol() != "sudoku-tcp-v1" {

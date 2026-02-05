@@ -22,6 +22,8 @@ func pipeConn(a, b net.Conn) {
 		copyOneWay(a, b)
 		if cw, ok := a.(closeWriter); ok {
 			_ = cw.CloseWrite()
+		} else {
+			_ = a.Close()
 		}
 		if cr, ok := b.(closeReader); ok {
 			_ = cr.CloseRead()
@@ -33,6 +35,8 @@ func pipeConn(a, b net.Conn) {
 		copyOneWay(b, a)
 		if cw, ok := b.(closeWriter); ok {
 			_ = cw.CloseWrite()
+		} else {
+			_ = b.Close()
 		}
 		if cr, ok := a.(closeReader); ok {
 			_ = cr.CloseRead()

@@ -30,7 +30,8 @@ func rewriteJavaScriptRootAbsolutePaths(in []byte, prefix string) []byte {
 
 		mode int = jsCode
 
-		stringStart int // index of first char after opening quote
+		stringStart   int // index of first char after opening quote
+		templateStart int // index of first char in the current template raw segment
 
 		exprDepth []int // ${ ... } brace nesting (per template expression frame)
 
@@ -60,6 +61,7 @@ func rewriteJavaScriptRootAbsolutePaths(in []byte, prefix string) []byte {
 					if exprDepth[top] == 0 {
 						exprDepth = exprDepth[:top]
 						mode = jsTemplateRaw
+						templateStart = i + 1
 						continue
 					}
 					exprDepth[top]--
@@ -81,6 +83,7 @@ func rewriteJavaScriptRootAbsolutePaths(in []byte, prefix string) []byte {
 				continue
 			case '`':
 				mode = jsTemplateRaw
+				templateStart = i + 1
 				continue
 			case '/':
 				if i+1 < len(in) {
@@ -168,9 +171,24 @@ func rewriteJavaScriptRootAbsolutePaths(in []byte, prefix string) []byte {
 				regexAllowed = false
 				continue
 			}
-			if i == stringStart && c == '/' {
-				if i+1 < len(in) && in[i+1] == delim {
+			if c == '/' {
+				rootCtx := i == stringStart
+				if !rootCtx && i > stringStart {
+					switch in[i-1] {
+					case '"', '\'', '`':
+						rootCtx = true
+					default:
+					}
+				}
+				if !rootCtx {
+					continue
+				}
+				if i+1 < len(in) && isURLTerminalByte(in[i+1]) {
 					// Bare "/" (often used as separators) is not necessarily a URL.
+					continue
+				}
+				if i+2 < len(in) && in[i+1] == '\\' && isURLTerminalByte(in[i+2]) {
+					// Bare "/" in escaped strings (e.g. JSON embedded inside JS string: \"separator\":\"/\"\").
 					continue
 				}
 				if i+1 < len(in) && in[i+1] == '/' {
@@ -203,9 +221,22 @@ func rewriteJavaScriptRootAbsolutePaths(in []byte, prefix string) []byte {
 				continue
 			}
 
-			if i > 0 && in[i-1] == '`' && c == '/' {
-				if i+1 < len(in) && in[i+1] == '`' {
-					// Bare "/" in a template literal.
+			if c == '/' {
+				rootCtx := i == templateStart
+				if !rootCtx && i > templateStart {
+					switch in[i-1] {
+					case '"', '\'', '`':
+						rootCtx = true
+					default:
+					}
+				}
+				if !rootCtx {
+					continue
+				}
+				if i+1 < len(in) && isURLTerminalByte(in[i+1]) {
+					continue
+				}
+				if i+2 < len(in) && in[i+1] == '\\' && isURLTerminalByte(in[i+2]) {
 					continue
 				}
 				if i+1 < len(in) && in[i+1] == '/' {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/saba-futai/sudoku/internal/config"
+	"golang.org/x/crypto/ssh"
 )
 
 func TestReverseProxy_TCP_DefaultRoute(t *testing.T) {
@@ -81,4 +82,71 @@ func TestReverseProxy_TCP_DefaultRoute(t *testing.T) {
 	}
 
 	t.Fatalf("reverse tcp proxy did not become ready")
+}
+
+func TestReverseProxy_TCP_DefaultRoute_SSH(t *testing.T) {
+	sshSrv := startTestSSHServer(t, "127.0.0.1:0", "u", "p")
+	defer sshSrv.Close()
+
+	serverKey, clientKey := newTestKeys(t)
+
+	ports, err := getFreePorts(3)
+	if err != nil {
+		t.Fatalf("ports: %v", err)
+	}
+	serverPort := ports[0]
+	clientPort := ports[1]
+	reversePort := ports[2]
+
+	reverseListen := localServerAddr(reversePort)
+
+	serverCfg := newTestServerConfig(serverPort, serverKey)
+	serverCfg.Reverse = &config.ReverseConfig{Listen: reverseListen}
+	startSudokuServer(t, serverCfg)
+	waitForAddr(t, reverseListen)
+
+	clientCfg := newTestClientConfig(clientPort, localServerAddr(serverPort), clientKey)
+	clientCfg.Reverse = &config.ReverseConfig{
+		ClientID: "r4s",
+		Routes: []config.ReverseRoute{
+			// Path empty => raw TCP reverse on reverse.listen.
+			{Target: sshSrv.Addr()},
+		},
+	}
+	startSudokuClient(t, clientCfg)
+
+	rawConn, err := net.DialTimeout("tcp", reverseListen, 5*time.Second)
+	if err != nil {
+		t.Fatalf("tcp dial: %v", err)
+	}
+	_ = rawConn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	sshCfg := &ssh.ClientConfig{
+		User:            "u",
+		Auth:            []ssh.AuthMethod{ssh.Password("p")},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+	cconn, chans, reqs, err := ssh.NewClientConn(rawConn, reverseListen, sshCfg)
+	if err != nil {
+		_ = rawConn.Close()
+		t.Fatalf("ssh handshake: %v", err)
+	}
+	_ = rawConn.SetDeadline(time.Time{})
+
+	client := ssh.NewClient(cconn, chans, reqs)
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("ssh session: %v", err)
+	}
+	defer sess.Close()
+
+	out, err := sess.CombinedOutput("echo hello")
+	if err != nil {
+		t.Fatalf("ssh exec: %v (out=%q)", err, string(out))
+	}
+	if string(out) != "echo hello" {
+		t.Fatalf("unexpected output: %q", string(out))
+	}
 }

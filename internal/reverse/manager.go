@@ -700,8 +700,13 @@ func rewriteTextPayload(contentType, reqPath string, in []byte, prefix string) [
 	if isJavaScriptContentType(contentType) {
 		out = rewriteJavaScriptRootAbsolutePaths(in, prefix)
 	} else {
-		// Always apply the safe, quote/url() based rewrite.
-		out = rewriteRootAbsolutePaths(in, prefix)
+		switch contentType {
+		case "text/html", "application/xhtml+xml":
+			out = rewriteHTMLRootAbsolutePaths(in, prefix)
+		default:
+			// Always apply the safe, quote/url() based rewrite.
+			out = rewriteRootAbsolutePaths(in, prefix)
+		}
 	}
 
 	// HTML needs extra help for attributes like srcset where multiple URLs exist within one quoted value:
@@ -896,6 +901,10 @@ func rewriteRootAbsolutePaths(in []byte, prefix string) []byte {
 		}
 		if i+1 < len(in) && isURLTerminalByte(in[i+1]) {
 			// Bare "/" (e.g. JSON separator="/") is not a URL path and rewriting it breaks apps.
+			continue
+		}
+		if i+2 < len(in) && in[i+1] == '\\' && isURLTerminalByte(in[i+2]) {
+			// Bare "/" in escaped strings (e.g. JSON embedded inside JS string: \"separator\":\"/\"\").
 			continue
 		}
 		if i+1 < len(in) && in[i+1] == '/' {

@@ -436,8 +436,9 @@ func TestReverseProxy_HTML_BareSlashNotRewritten(t *testing.T) {
 		switch r.URL.Path {
 		case "/":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			// separator "/" is a plain value (not a URL) and must not be rewritten.
-			_, _ = w.Write([]byte(`<html><head><script>window.cfg={"separator":"/","api":"/api/ping","bg":"/backgrounds"}</script></head></html>`))
+			// Mimic Navidrome: JSON is embedded as a string with escaped quotes.
+			// The separator "/" is a plain value (not a URL) and must not be rewritten.
+			_, _ = w.Write([]byte(`<html><head><script>window.__APP_CONFIG__="{\"separator\":\"/\",\"api\":\"/api/ping\",\"bg\":\"/backgrounds\"}"</script></head></html>`))
 		case "/api/ping":
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = w.Write([]byte("pong"))
@@ -487,14 +488,74 @@ func TestReverseProxy_HTML_BareSlashNotRewritten(t *testing.T) {
 		t.Fatalf("reverse html status: %d", resp.StatusCode)
 	}
 	body := string(bodyBytes)
-	if !strings.Contains(body, `"separator":"/"`) {
+	if !strings.Contains(body, `\"separator\":\"/\"`) {
 		t.Fatalf("expected bare slash to remain unchanged, got: %q", body)
 	}
-	if !strings.Contains(body, `"api":"/gitea/api/ping"`) {
+	if !strings.Contains(body, `\"api\":\"/gitea/api/ping\"`) {
 		t.Fatalf("expected rewritten api url, got: %q", body)
 	}
-	if !strings.Contains(body, `"bg":"/gitea/backgrounds"`) {
+	if !strings.Contains(body, `\"bg\":\"/gitea/backgrounds\"`) {
 		t.Fatalf("expected rewritten backgrounds url, got: %q", body)
+	}
+}
+
+func TestReverseProxy_HTML_InlineJS_RegexNotCorrupted(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<html><head><script>const s="a".replace(/"/g,"x");fetch("/api/ping");</script></head></html>`))
+		case "/api/ping":
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("pong"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer origin.Close()
+	originAddr := strings.TrimPrefix(origin.URL, "http://")
+
+	serverKey, clientKey := newTestKeys(t)
+
+	ports, err := getFreePorts(3)
+	if err != nil {
+		t.Fatalf("ports: %v", err)
+	}
+	serverPort := ports[0]
+	clientPort := ports[1]
+	reversePort := ports[2]
+
+	reverseListen := localServerAddr(reversePort)
+
+	serverCfg := newTestServerConfig(serverPort, serverKey)
+	serverCfg.Reverse = &config.ReverseConfig{Listen: reverseListen}
+	startSudokuServer(t, serverCfg)
+	waitForAddr(t, reverseListen)
+
+	clientCfg := newTestClientConfig(clientPort, localServerAddr(serverPort), clientKey)
+	clientCfg.Reverse = &config.ReverseConfig{
+		ClientID: "r4s",
+		Routes:   []config.ReverseRoute{{Path: "/gitea", Target: originAddr}},
+	}
+	startSudokuClient(t, clientCfg)
+	waitForReverseRouteReady(t, reverseListen, "/gitea")
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, err := httpClient.Get(fmt.Sprintf("http://%s/gitea/", reverseListen))
+	if err != nil {
+		t.Fatalf("reverse html: %v", err)
+	}
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reverse html status: %d", resp.StatusCode)
+	}
+	body := string(bodyBytes)
+	if !strings.Contains(body, `fetch("/gitea/api/ping")`) {
+		t.Fatalf("expected rewritten api url, got: %q", body)
+	}
+	if !strings.Contains(body, `const s="a".replace(/"/g,"x");`) {
+		t.Fatalf("expected regex literal with quote to remain unchanged, got: %q", body)
 	}
 }
 
