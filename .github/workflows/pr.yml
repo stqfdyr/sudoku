@@ -11,9 +11,20 @@ permissions:
 
 jobs:
   test:
-    name: Race & Integration Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: Strict Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            race: "true"
+          - os: macos-latest
+            race: "true"
+          - os: windows-latest
+            race: "false"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,5 +35,18 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run full test suite with race detector
-        run: go test ./... -race -count=1
+      - name: Go vet
+        shell: bash
+        run: |
+          set -euo pipefail
+          go vet ./...
+
+      - name: Run full test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          FLAGS="-count=1 -shuffle=on -v"
+          if [ "${{ matrix.race }}" = "true" ]; then
+            FLAGS="$FLAGS -race"
+          fi
+          go test ./... $FLAGS

@@ -680,8 +680,14 @@ func rewriteTextPayload(contentType string, in []byte, prefix string) []byte {
 	if in == nil {
 		return nil
 	}
-	// Always apply the safe, quote/url() based rewrite.
-	out := rewriteRootAbsolutePaths(in, prefix)
+
+	var out []byte
+	if isJavaScriptContentType(contentType) {
+		out = rewriteJavaScriptRootAbsolutePaths(in, prefix)
+	} else {
+		// Always apply the safe, quote/url() based rewrite.
+		out = rewriteRootAbsolutePaths(in, prefix)
+	}
 
 	// HTML needs extra help for attributes like srcset where multiple URLs exist within one quoted value:
 	//   srcset="/a.png 1x, /b.png 2x"
@@ -690,6 +696,15 @@ func rewriteTextPayload(contentType string, in []byte, prefix string) []byte {
 		out = rewriteHTMLSrcset(out, prefix)
 	}
 	return out
+}
+
+func isJavaScriptContentType(contentType string) bool {
+	switch contentType {
+	case "application/javascript", "application/x-javascript", "text/javascript", "text/ecmascript", "application/ecmascript":
+		return true
+	default:
+		return false
+	}
 }
 
 func rewriteHTMLSrcset(in []byte, prefix string) []byte {

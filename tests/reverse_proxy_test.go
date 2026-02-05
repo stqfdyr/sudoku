@@ -190,9 +190,14 @@ func TestReverseProxy_RefererFallback_RootPaths(t *testing.T) {
 		switch r.URL.Path {
 		case "/app.js":
 			w.Header().Set("Content-Type", "application/javascript")
-			// Contains a regex literal with "'\\/api\\/...'" which previously broke when JS rewriting
-			// attempted to insert prefixes into escaped slashes.
-			_, _ = w.Write([]byte("fetch(`/api/ping`); const re=/'\\\\/api\\\\/ping'/g;"))
+			// This payload intentionally includes regex literals that contain quotes, to ensure the
+			// reverse-proxy rewrite does not corrupt JavaScript by rewriting regex delimiters.
+			_, _ = w.Write([]byte(
+				"fetch(`/api/ping`); " +
+					`const re1=/"/g; ` +
+					"const re2=/'/g; " +
+					`const s="a".replace(/"/g,"x");`,
+			))
 		case "/api/ping":
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = w.Write([]byte("pong"))
@@ -243,8 +248,14 @@ func TestReverseProxy_RefererFallback_RootPaths(t *testing.T) {
 	if !strings.Contains(js, "fetch(`/gitea/api/ping`)") {
 		t.Fatalf("expected js root path to be rewritten, got: %q", js)
 	}
-	if !strings.Contains(js, "const re=/'\\\\/api\\\\/ping'/g") {
-		t.Fatalf("expected regex literal to remain unchanged, got: %q", js)
+	if !strings.Contains(js, `const s="a".replace(/"/g,"x");`) {
+		t.Fatalf("expected regex literal with quote to remain unchanged, got: %q", js)
+	}
+	if !strings.Contains(js, `const re1=/"/g;`) {
+		t.Fatalf("expected regex literal /\"/g to remain unchanged, got: %q", js)
+	}
+	if !strings.Contains(js, "const re2=/'/g;") {
+		t.Fatalf("expected regex literal /'/g to remain unchanged, got: %q", js)
 	}
 
 	// Root-absolute asset/API calls should still work via Referer-based routing.
