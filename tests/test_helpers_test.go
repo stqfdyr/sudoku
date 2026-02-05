@@ -96,3 +96,17 @@ func waitForReverseRouteReady(t testing.TB, reverseListen, prefix string) {
 	}
 	t.Fatalf("reverse route not ready: %s", prefix)
 }
+
+func cookieHeaderValue(cookies []*http.Cookie) string {
+	if len(cookies) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(cookies))
+	for _, c := range cookies {
+		if c == nil || c.Name == "" {
+			continue
+		}
+		parts = append(parts, c.Name+"="+c.Value)
+	}
+	return strings.Join(parts, "; ")
+}

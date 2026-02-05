@@ -21,35 +21,55 @@ import (
 )
 
 // Helpers to bootstrap test infra.
+const (
+	testPortMin = 20000
+	testPortMax = 29999
+)
+
+var (
+	testPortMu   sync.Mutex
+	testPortNext = testPortMin
+	testPortUsed = map[int]struct{}{}
+)
+
+func allocTestPortLocked() (int, error) {
+	for i := 0; i <= testPortMax-testPortMin; i++ {
+		port := testPortNext
+		testPortNext++
+		if testPortNext > testPortMax {
+			testPortNext = testPortMin
+		}
+		if _, used := testPortUsed[port]; used {
+			continue
+		}
+		l, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err != nil {
+			continue
+		}
+		_ = l.Close()
+		testPortUsed[port] = struct{}{}
+		return port, nil
+	}
+	return 0, fmt.Errorf("no free test ports in range %d-%d", testPortMin, testPortMax)
+}
+
 func getFreePort() (int, error) {
-	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
-	if err != nil {
-		return 0, err
-	}
-	l, err := net.ListenTCP("tcp", addr)
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
+	testPortMu.Lock()
+	defer testPortMu.Unlock()
+	return allocTestPortLocked()
 }
 
 func getFreePorts(count int) ([]int, error) {
-	var listeners []net.Listener
-	var ports []int
+	testPortMu.Lock()
+	defer testPortMu.Unlock()
+
+	ports := make([]int, 0, count)
 	for i := 0; i < count; i++ {
-		l, err := net.Listen("tcp", "localhost:0")
+		p, err := allocTestPortLocked()
 		if err != nil {
-			for _, l := range listeners {
-				l.Close()
-			}
 			return nil, err
 		}
-		listeners = append(listeners, l)
-		ports = append(ports, l.Addr().(*net.TCPAddr).Port)
-	}
-	for _, l := range listeners {
-		l.Close()
+		ports = append(ports, p)
 	}
 	return ports, nil
 }

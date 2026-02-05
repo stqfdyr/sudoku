@@ -97,8 +97,8 @@ func TestReverseProxy_WebSocket_Subpath(t *testing.T) {
 		t.Fatalf("reverse js status: %d", resp.StatusCode)
 	}
 	js := string(jsBytes)
-	if !strings.Contains(js, `new WebSocket("/app/ws")`) {
-		t.Fatalf("expected rewritten ws url in js, got: %q", js)
+	if !strings.Contains(js, `new WebSocket("/ws")`) {
+		t.Fatalf("expected ws url to remain unchanged in js, got: %q", js)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

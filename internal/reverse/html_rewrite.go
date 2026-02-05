@@ -7,7 +7,7 @@ import "bytes"
 // HTML needs generic quote/url() rewriting for attributes, but applying that rewrite to inline JS can
 // corrupt regex literals (e.g. .replace(/"/g, ...)). This function rewrites:
 //   - non-script regions using rewriteRootAbsolutePaths
-//   - <script>...</script> bodies using rewriteJavaScriptRootAbsolutePaths
+//   - <script>...</script> bodies left untouched
 func rewriteHTMLRootAbsolutePaths(in []byte, prefix string) []byte {
 	if len(in) == 0 {
 		return in
@@ -47,12 +47,7 @@ func rewriteHTMLRootAbsolutePaths(in []byte, prefix string) []byte {
 		}
 		out.Write(beforeRewritten)
 
-		script := in[contentStart:close]
-		scriptRewritten := rewriteJavaScriptRootAbsolutePaths(script, prefix)
-		if !bytes.Equal(script, scriptRewritten) {
-			modified = true
-		}
-		out.Write(scriptRewritten)
+		out.Write(in[contentStart:close])
 
 		last = close
 		open = indexHTMLScriptOpen(in, last)

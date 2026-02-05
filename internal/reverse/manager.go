@@ -217,6 +217,9 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if entry == nil {
 		entry = m.matchByRefererLocked(r)
 	}
+	if entry == nil {
+		entry = m.matchByCookieLocked(r)
+	}
 	m.mu.RUnlock()
 
 	if entry == nil || entry.proxy == nil {
@@ -300,6 +303,33 @@ func (m *Manager) matchByRefererLocked(r *http.Request) *routeEntry {
 	return m.matchLocked(refPath)
 }
 
+const reversePrefixCookieName = "sudoku_rev_prefix"
+
+func (m *Manager) matchByCookieLocked(r *http.Request) *routeEntry {
+	if r == nil {
+		return nil
+	}
+	c, err := r.Cookie(reversePrefixCookieName)
+	if err != nil {
+		return nil
+	}
+	prefix, err := url.PathUnescape(strings.TrimSpace(c.Value))
+	if err != nil {
+		return nil
+	}
+	if prefix == "" {
+		return nil
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix == "" || prefix == "/" {
+		return nil
+	}
+	return m.matchLocked(prefix)
+}
+
 func pathPrefixMatch(path, prefix string) bool {
 	if prefix == "" {
 		return false
@@ -365,6 +395,7 @@ func newRouteProxy(prefix, target string, stripPrefix bool, hostHeader string, m
 		if stripPrefix && prefix != "" && prefix != "/" {
 			rewriteLocation(resp, prefix)
 			rewriteSetCookiePath(resp, prefix)
+			rewriteReversePrefixCookie(resp, prefix)
 			if err := rewriteTextBody(resp, prefix); err != nil {
 				return err
 			}
@@ -522,6 +553,31 @@ func rewriteSetCookiePath(resp *http.Response, prefix string) {
 	for _, v := range out {
 		resp.Header.Add("Set-Cookie", v)
 	}
+}
+
+func rewriteReversePrefixCookie(resp *http.Response, prefix string) {
+	if resp == nil || resp.Header == nil {
+		return
+	}
+	p := strings.TrimSpace(prefix)
+	if p == "" || p == "/" {
+		return
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	p = strings.TrimRight(p, "/")
+	if p == "" || p == "/" {
+		return
+	}
+	c := (&http.Cookie{
+		Name:     reversePrefixCookieName,
+		Value:    url.PathEscape(p),
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}).String()
+	resp.Header.Add("Set-Cookie", c)
 }
 
 func rewriteTextBody(resp *http.Response, prefix string) error {
@@ -698,7 +754,7 @@ func rewriteTextPayload(contentType, reqPath string, in []byte, prefix string) [
 
 	var out []byte
 	if isJavaScriptContentType(contentType) {
-		out = rewriteJavaScriptRootAbsolutePaths(in, prefix)
+		return in
 	} else {
 		switch contentType {
 		case "text/html", "application/xhtml+xml":

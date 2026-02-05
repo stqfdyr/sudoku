@@ -85,8 +85,10 @@ func TestBDD_ReverseProxy_WebUI_BehindTLSEdge(t *testing.T) {
 	edge := httptest.NewTLSServer(rp)
 	defer edge.Close()
 
+	jar, _ := cookiejar.New(nil)
 	httpClient := edge.Client()
 	httpClient.Timeout = 5 * time.Second
+	httpClient.Jar = jar
 
 	// When: a user loads the app through the edge under /app/
 	resp, err := httpClient.Get(edge.URL + "/app/")
@@ -117,18 +119,25 @@ func TestBDD_ReverseProxy_WebUI_BehindTLSEdge(t *testing.T) {
 	}
 	js := string(jsBytes)
 
-	// Then: the JS is rewritten so it connects to /app/ws.
-	if !strings.Contains(js, `new WebSocket("/app/ws")`) {
-		t.Fatalf("expected rewritten ws url in js, got: %q", js)
+	// Then: the JS keeps the root-absolute WebSocket path ("/ws").
+	if !strings.Contains(js, `new WebSocket("/ws")`) {
+		t.Fatalf("expected ws url to remain unchanged in js, got: %q", js)
 	}
 
-	// When: the browser upgrades to WebSocket through the edge.
+	// When: the browser upgrades to WebSocket through the edge (no prefix in the path).
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wsURL := strings.Replace(edge.URL, "https://", "wss://", 1) + "/app/ws"
+	wsURL := strings.Replace(edge.URL, "https://", "wss://", 1) + "/ws"
+	wsHeader := http.Header{}
+	if u, err := url.Parse(edge.URL); err == nil {
+		if cookies := jar.Cookies(u); len(cookies) > 0 {
+			wsHeader.Set("Cookie", cookieHeaderValue(cookies))
+		}
+	}
 	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPClient:      edge.Client(),
+		HTTPHeader:      wsHeader,
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {

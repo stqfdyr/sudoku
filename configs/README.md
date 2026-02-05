@@ -121,7 +121,7 @@
 - 客户端：`reverse.routes` 声明要暴露的本地服务：
   - `reverse.routes[].path`：对外路径前缀（如 `"/gitea"`）
   - `reverse.routes[].target`：客户端本地 `host:port`（如 `"127.0.0.1:3000"`）
-  - `reverse.routes[].strip_prefix`：是否去掉前缀后再转发（默认 `true`；开启后会自动重写 `Location`/`Set-Cookie Path` 以及 HTML/CSS/JS/SVG 内的根路径引用以适配子路径挂载）
+  - `reverse.routes[].strip_prefix`：是否去掉前缀后再转发（默认 `true`；开启后会自动重写 `Location`/`Set-Cookie Path` 以及 HTML/CSS/SVG 内的根路径引用以适配子路径挂载；JS 不做内容重写以避免破坏 bundle/正则，根路径 API/WS 请求通过 `Referer` + Cookie 路由回退保证可用）
   - `reverse.routes[].host_header`：可选，覆盖转发时的 `Host`
 
 示例（客户端暴露 Web + SSH）：

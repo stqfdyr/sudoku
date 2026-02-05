@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -91,7 +92,8 @@ func TestReverseProxy_PathPrefix(t *testing.T) {
 		t.Fatalf("expected Location to end with /gitea/, got: %q", resp.Header.Get("Location"))
 	}
 
-	httpClient := &http.Client{Timeout: 5 * time.Second}
+	jar, _ := cookiejar.New(nil)
+	httpClient := &http.Client{Timeout: 5 * time.Second, Jar: jar}
 
 	// HTML must be rewritten so the browser requests /gitea/assets/... instead of /assets/...
 	resp, err = httpClient.Get(fmt.Sprintf("http://%s/gitea/", reverseListen))
@@ -235,7 +237,8 @@ func TestReverseProxy_RefererFallback_RootPaths(t *testing.T) {
 	startSudokuClient(t, clientCfg)
 	waitForReverseRouteReady(t, reverseListen, "/gitea")
 
-	httpClient := &http.Client{Timeout: 5 * time.Second}
+	jar, _ := cookiejar.New(nil)
+	httpClient := &http.Client{Timeout: 5 * time.Second, Jar: jar}
 
 	// JS should be rewritten safely so root-absolute paths work under a subpath (e.g. WebSocket "/ws").
 	resp, err := httpClient.Get(fmt.Sprintf("http://%s/gitea/app.js", reverseListen))
@@ -248,8 +251,8 @@ func TestReverseProxy_RefererFallback_RootPaths(t *testing.T) {
 		t.Fatalf("reverse js status: %d", resp.StatusCode)
 	}
 	js := string(body)
-	if !strings.Contains(js, "fetch(`/gitea/api/ping`)") {
-		t.Fatalf("expected js root path to be rewritten, got: %q", js)
+	if !strings.Contains(js, "fetch(`/api/ping`)") {
+		t.Fatalf("expected js root path to remain unchanged, got: %q", js)
 	}
 	if !strings.Contains(js, `const s="a".replace(/"/g,"x");`) {
 		t.Fatalf("expected regex literal with quote to remain unchanged, got: %q", js)
@@ -289,6 +292,21 @@ func TestReverseProxy_RefererFallback_RootPaths(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || string(pong) != "pong" {
 		t.Fatalf("expected pong, got status=%d body=%q", resp.StatusCode, string(pong))
+	}
+
+	// Cookie-based fallback should route even without Referer.
+	req, err = http.NewRequest(http.MethodGet, fmt.Sprintf("http://%s/api/ping", reverseListen), nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err = httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("reverse cookie api ping: %v", err)
+	}
+	pong, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(pong) != "pong" {
+		t.Fatalf("expected pong via cookie, got status=%d body=%q", resp.StatusCode, string(pong))
 	}
 }
 
@@ -396,8 +414,8 @@ func TestReverseProxy_PathPrefix_GzipOrigin(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("reverse js status: %d", resp.StatusCode)
 	}
-	if !strings.Contains(string(jsBytes), `fetch("/gitea/api/ping")`) {
-		t.Fatalf("expected rewritten js root path, got: %q", string(jsBytes))
+	if !strings.Contains(string(jsBytes), `fetch("/api/ping")`) {
+		t.Fatalf("expected js root path to remain unchanged, got: %q", string(jsBytes))
 	}
 
 	// Root-absolute requests should route correctly using Referer.
@@ -491,11 +509,11 @@ func TestReverseProxy_HTML_BareSlashNotRewritten(t *testing.T) {
 	if !strings.Contains(body, `\"separator\":\"/\"`) {
 		t.Fatalf("expected bare slash to remain unchanged, got: %q", body)
 	}
-	if !strings.Contains(body, `\"api\":\"/gitea/api/ping\"`) {
-		t.Fatalf("expected rewritten api url, got: %q", body)
+	if !strings.Contains(body, `\"api\":\"/api/ping\"`) {
+		t.Fatalf("expected api url to remain unchanged, got: %q", body)
 	}
-	if !strings.Contains(body, `\"bg\":\"/gitea/backgrounds\"`) {
-		t.Fatalf("expected rewritten backgrounds url, got: %q", body)
+	if !strings.Contains(body, `\"bg\":\"/backgrounds\"`) {
+		t.Fatalf("expected background url to remain unchanged, got: %q", body)
 	}
 }
 
@@ -551,15 +569,15 @@ func TestReverseProxy_HTML_InlineJS_RegexNotCorrupted(t *testing.T) {
 		t.Fatalf("reverse html status: %d", resp.StatusCode)
 	}
 	body := string(bodyBytes)
-	if !strings.Contains(body, `fetch("/gitea/api/ping")`) {
-		t.Fatalf("expected rewritten api url, got: %q", body)
+	if !strings.Contains(body, `fetch("/api/ping")`) {
+		t.Fatalf("expected api url to remain unchanged, got: %q", body)
 	}
 	if !strings.Contains(body, `const s="a".replace(/"/g,"x");`) {
 		t.Fatalf("expected regex literal with quote to remain unchanged, got: %q", body)
 	}
 }
 
-func TestReverseProxy_JS_MisleadingContentType_UsesJSRewrite(t *testing.T) {
+func TestReverseProxy_JS_MisleadingContentType_NoRewrite(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/app.js":
@@ -612,8 +630,8 @@ func TestReverseProxy_JS_MisleadingContentType_UsesJSRewrite(t *testing.T) {
 		t.Fatalf("reverse js status: %d", resp.StatusCode)
 	}
 	body := string(bodyBytes)
-	if !strings.Contains(body, `fetch("/gitea/api/ping")`) {
-		t.Fatalf("expected rewritten js root path, got: %q", body)
+	if !strings.Contains(body, `fetch("/api/ping")`) {
+		t.Fatalf("expected js root path to remain unchanged, got: %q", body)
 	}
 	if !strings.Contains(body, `const re=/"/g;`) {
 		t.Fatalf("expected regex literal to remain unchanged, got: %q", body)
