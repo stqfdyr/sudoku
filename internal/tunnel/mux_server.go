@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"syscall"
 	"time"
 
 	"github.com/saba-futai/sudoku/internal/protocol"
@@ -69,7 +70,7 @@ func HandleMuxWithDialer(conn net.Conn, onConnect func(targetAddr string), dialT
 
 	<-sess.closed
 	err := sess.closedErr()
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.ECONNRESET) {
 		return nil
 	}
 	return err
