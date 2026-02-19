@@ -20,11 +20,11 @@ import (
 	"github.com/saba-futai/sudoku/internal/tunnel"
 	"github.com/saba-futai/sudoku/pkg/connutil"
 	"github.com/saba-futai/sudoku/pkg/crypto"
+	"github.com/saba-futai/sudoku/pkg/dnsutil"
 	"github.com/saba-futai/sudoku/pkg/geodata"
 	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
 )
 
-// PeekConn 允许查看第一个字节不消耗它
 type PeekConn struct {
 	net.Conn
 	peeked []byte
@@ -56,21 +56,9 @@ func (c *PeekConn) Read(p []byte) (n int, err error) {
 	return c.Conn.Read(p)
 }
 
-// DNSCache 简单的 DNS 缓存
-type DNSCache struct {
-	cache map[string]dnsCacheEntry
-	mu    sync.RWMutex
-	ttl   time.Duration
-}
-
-type dnsCacheEntry struct {
-	ip        net.IP
-	expiresAt time.Time
-}
-
-var globalDNSCache = &DNSCache{
-	cache: make(map[string]dnsCacheEntry),
-	ttl:   10 * time.Minute,
+var lookupIPsWithCache = dnsutil.LookupIPsWithCache
+var directDial = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+	return net.DialTimeout(network, addr, timeout)
 }
 
 func normalizeClientKey(cfg *config.Config) ([]byte, bool, error) {
@@ -88,53 +76,7 @@ func normalizeClientKey(cfg *config.Config) ([]byte, bool, error) {
 	return privateKeyBytes, true, nil
 }
 
-func (d *DNSCache) Lookup(host string) net.IP {
-	host = normalizeDNSHost(host)
-	if host == "" {
-		return nil
-	}
-
-	d.mu.RLock()
-	entry, ok := d.cache[host]
-	d.mu.RUnlock()
-	if !ok {
-		return nil
-	}
-	now := time.Now()
-	if d.ttl > 0 && now.After(entry.expiresAt) {
-		d.mu.Lock()
-		if latest, ok := d.cache[host]; ok && now.After(latest.expiresAt) {
-			delete(d.cache, host)
-		}
-		d.mu.Unlock()
-		return nil
-	}
-	return append(net.IP(nil), entry.ip...)
-}
-
-func (d *DNSCache) Set(host string, ip net.IP) {
-	host = normalizeDNSHost(host)
-	if host == "" || ip == nil {
-		return
-	}
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.ttl <= 0 {
-		d.ttl = 10 * time.Minute
-	}
-	d.cache[host] = dnsCacheEntry{
-		ip:        append(net.IP(nil), ip...),
-		expiresAt: time.Now().Add(d.ttl),
-	}
-}
-
-func normalizeDNSHost(host string) string {
-	return strings.ToLower(strings.TrimSpace(host))
-}
-
 func RunClient(cfg *config.Config, tables []*sudoku.Table) {
-	// 1. Initialize Dialer
 	var dialer tunnel.Dialer
 
 	privateKeyBytes, changed, err := normalizeClientKey(cfg)
@@ -170,13 +112,11 @@ func RunClient(cfg *config.Config, tables []*sudoku.Table) {
 
 	startReverseClient(cfg, &baseDialer)
 
-	// 2. 初始化 GeoIP/PAC 管理器
 	var geoMgr *geodata.Manager
 	if cfg.ProxyMode == "pac" {
 		geoMgr = geodata.GetInstance(cfg.RuleURLs)
 	}
 
-	// 3. 监听本地端口
 	l, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.LocalPort))
 	if err != nil {
 		log.Fatal(err)
@@ -198,35 +138,27 @@ func RunClient(cfg *config.Config, tables []*sudoku.Table) {
 }
 
 func handleMixedConn(c net.Conn, cfg *config.Config, table *sudoku.Table, geoMgr *geodata.Manager, dialer tunnel.Dialer) {
-	// peek第一个字节以确定协议
 	buf := make([]byte, 1)
 	if _, err := io.ReadFull(c, buf); err != nil {
 		c.Close()
 		return
 	}
 
-	// 把读取的字节放回去
 	pConn := &PeekConn{Conn: c, peeked: buf}
 
 	switch buf[0] {
 	case 0x05:
-		// SOCKS5
 		handleClientSocks5(pConn, cfg, table, geoMgr, dialer)
 	case 0x04:
-		// SOCKS4
 		handleClientSocks4(pConn, cfg, table, geoMgr, dialer)
 	default:
-		// 假设是 HTTP/HTTPS
 		handleHTTP(pConn, cfg, table, geoMgr, dialer)
 	}
 }
 
-// ==== SOCKS5 Handler ====
-
 func handleClientSocks5(conn net.Conn, cfg *config.Config, table *sudoku.Table, geoMgr *geodata.Manager, dialer tunnel.Dialer) {
 	defer conn.Close()
 
-	// 1. SOCKS5 握手
 	buf := make([]byte, 262)
 	if _, err := io.ReadFull(conn, buf[:2]); err != nil {
 		return
@@ -237,22 +169,17 @@ func handleClientSocks5(conn net.Conn, cfg *config.Config, table *sudoku.Table, 
 	}
 	conn.Write([]byte{0x05, 0x00})
 
-	// 2. 读取请求
 	header := make([]byte, 3)
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return
 	}
 
-	// CMD: header[1] (0x01 Connect)
 	switch header[1] {
 	case 0x01:
-		// CONNECT
 	case 0x03:
-		// UDP Associate
 		handleSocks5UDPAssociate(conn, cfg, dialer)
 		return
 	default:
-		// 不支持 Bind 或其他命令
 		conn.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
@@ -262,18 +189,14 @@ func handleClientSocks5(conn net.Conn, cfg *config.Config, table *sudoku.Table, 
 		return
 	}
 
-	// 3. 路由与连接
 	targetConn, success := dialTarget(destAddrStr, destIP, cfg, geoMgr, dialer)
 	if !success {
-		// SOCKS5 Error
 		conn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
 
-	// SOCKS5 Success
 	conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 
-	// 4. 转发
 	pipeConn(conn, targetConn)
 }
 
@@ -531,14 +454,8 @@ func (s *uotClientSession) getClientAddr() *net.UDPAddr {
 	return s.clientAddr
 }
 
-// ==== SOCKS4 Handler ====
-
 func handleClientSocks4(conn net.Conn, cfg *config.Config, table *sudoku.Table, geoMgr *geodata.Manager, dialer tunnel.Dialer) {
 	defer conn.Close()
-
-	// SOCKS4 Request Format:
-	// VN (1) | CD (1) | DSTPORT (2) | DSTIP (4) | USERID (variable) | NULL (1)
-	// SOCKS4a extension: if DSTIP is 0.0.0.x (x!=0), then DOMAIN (variable) | NULL (1) follows USERID
 
 	buf := make([]byte, 8)
 	if _, err := io.ReadFull(conn, buf); err != nil {
@@ -554,7 +471,6 @@ func handleClientSocks4(conn net.Conn, cfg *config.Config, table *sudoku.Table, 
 	port := binary.BigEndian.Uint16(buf[2:4])
 	ipBytes := buf[4:8]
 
-	// Read UserID
 	if _, err := readString(conn); err != nil {
 		return
 	}
@@ -562,9 +478,7 @@ func handleClientSocks4(conn net.Conn, cfg *config.Config, table *sudoku.Table, 
 	var destAddrStr string
 	var destIP net.IP
 
-	// Check for SOCKS4a (0.0.0.x where x != 0)
 	if ipBytes[0] == 0 && ipBytes[1] == 0 && ipBytes[2] == 0 && ipBytes[3] != 0 {
-		// SOCKS4a: Read Domain
 		domain, err := readString(conn)
 		if err != nil {
 			return
@@ -578,12 +492,10 @@ func handleClientSocks4(conn net.Conn, cfg *config.Config, table *sudoku.Table, 
 	// Route & Connect
 	targetConn, success := dialTarget(destAddrStr, destIP, cfg, geoMgr, dialer)
 	if !success {
-		// SOCKS4 Error (91 = request rejected)
 		conn.Write([]byte{0x00, 0x5B, 0, 0, 0, 0, 0, 0})
 		return
 	}
 
-	// SOCKS4 Success (90 = request granted)
 	conn.Write([]byte{0x00, 0x5A, 0, 0, 0, 0, 0, 0})
 
 	pipeConn(conn, targetConn)
@@ -626,15 +538,13 @@ func decodeSocks5UDPRequest(pkt []byte) (string, []byte, error) {
 
 func buildUDPResponsePacket(addr string, payload []byte) []byte {
 	buf := &bytes.Buffer{}
-	buf.Write([]byte{0x00, 0x00, 0x00}) // RSV RSV FRAG(=0)
+	buf.Write([]byte{0x00, 0x00, 0x00})
 	if err := protocol.WriteAddress(buf, addr); err != nil {
 		return nil
 	}
 	buf.Write(payload)
 	return buf.Bytes()
 }
-
-// ==== HTTP Handler ====
 
 func handleHTTP(conn net.Conn, cfg *config.Config, table *sudoku.Table, geoMgr *geodata.Manager, dialer tunnel.Dialer) {
 	defer conn.Close()
@@ -645,13 +555,10 @@ func handleHTTP(conn net.Conn, cfg *config.Config, table *sudoku.Table, geoMgr *
 	}
 
 	host := req.Host
-	// 如果不带端口，默认补全
 	host = ensureHostPort(host, req.Method)
 
-	// 解析 IP (为了路由决策)
 	destIP := net.ParseIP(hostOnly(host))
 
-	// 路由决策与连接
 	targetConn, success := dialTarget(host, destIP, cfg, geoMgr, dialer)
 	if !success {
 		conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
@@ -659,12 +566,10 @@ func handleHTTP(conn net.Conn, cfg *config.Config, table *sudoku.Table, geoMgr *
 	}
 
 	if req.Method == http.MethodConnect {
-		// HTTPS Tunnel: 建立连接后回复 200 OK，然后纯透传
 		conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 		pipeConn(conn, targetConn)
 	} else {
 		req.RequestURI = ""
-		// 如果是绝对路径转换为相对路径
 		if req.URL.Scheme != "" {
 			req.URL.Scheme = ""
 			req.URL.Host = ""
@@ -691,56 +596,46 @@ func handleHTTP(conn net.Conn, cfg *config.Config, table *sudoku.Table, geoMgr *
 	}
 }
 
-// ==== Common Logic  ====
-
 func dialTarget(destAddrStr string, destIP net.IP, cfg *config.Config, geoMgr *geodata.Manager, dialer tunnel.Dialer) (net.Conn, bool) {
 	shouldProxy := true
+	directAddr := destAddrStr
 
-	if cfg.ProxyMode == "global" {
-		shouldProxy = true
-	} else if cfg.ProxyMode == "direct" {
+	switch cfg.ProxyMode {
+	case "direct":
 		shouldProxy = false
-	} else if cfg.ProxyMode == "pac" {
-		// 1. 检查域名或已知 IP 是否在 CN 列表
-		if geoMgr.IsCN(destAddrStr, destIP) {
+	case "pac":
+		if geoMgr != nil && geoMgr.IsCN(destAddrStr, destIP) {
 			shouldProxy = false
-			log.Printf("[PAC] %s -> DIRECT (Rule Match)", destAddrStr)
-		} else {
-			// 2. 如果没有匹配且 destIP 未知 (是域名)，尝试解析 IP 再检查
-			if destIP == nil {
-				host := hostOnly(destAddrStr)
+			break
+		}
 
-				// Try Cache First
-				if cachedIP := globalDNSCache.Lookup(host); cachedIP != nil {
-					if geoMgr.IsCN(destAddrStr, cachedIP) {
-						shouldProxy = false
-						log.Printf("[PAC] %s (%s) -> DIRECT (Cache Rule Match)", destAddrStr, cachedIP)
-					} else {
-						log.Printf("[PAC] %s (%s) -> PROXY (Cache)", destAddrStr, cachedIP)
-					}
-				} else {
-					// Real Lookup
-					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-					ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-					cancel()
+		if geoMgr != nil && destIP == nil {
+			host, port, err := net.SplitHostPort(destAddrStr)
+			if err != nil {
+				break
+			}
 
-					if err == nil && len(ips) > 0 {
-						globalDNSCache.Set(host, ips[0]) // Cache it
-						if geoMgr.IsCN(destAddrStr, ips[0]) {
-							shouldProxy = false
-							log.Printf("[PAC] %s (%s) -> DIRECT (IP Rule Match)", destAddrStr, ips[0])
-						} else {
-							log.Printf("[PAC] %s (%s) -> PROXY", destAddrStr, ips[0])
-						}
-					} else {
-						log.Printf("[PAC] %s -> PROXY (Default)", destAddrStr)
-					}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ips, lookupErr := lookupIPsWithCache(ctx, host)
+			cancel()
+			if lookupErr != nil || len(ips) == 0 {
+				break
+			}
+
+			var directIP net.IP
+			for _, ip := range ips {
+				if geoMgr.IsCN(destAddrStr, ip) {
+					directIP = ip
+					break
 				}
-			} else {
-				// 解析失败或无 IP，默认代理
-				log.Printf("[PAC] %s -> PROXY", destAddrStr)
+			}
+			if directIP != nil {
+				shouldProxy = false
+				directAddr = net.JoinHostPort(directIP.String(), port)
 			}
 		}
+	default: // global
+		shouldProxy = true
 	}
 
 	if shouldProxy {
@@ -750,15 +645,19 @@ func dialTarget(destAddrStr string, destIP net.IP, cfg *config.Config, geoMgr *g
 			return nil, false
 		}
 		return conn, true
-	} else {
-		// 直连模式
-		dConn, err := net.DialTimeout("tcp", destAddrStr, 5*time.Second)
+	}
+
+	dConn, err := directDial("tcp", directAddr, 5*time.Second)
+	if err != nil {
+		if directAddr != destAddrStr {
+			dConn, err = directDial("tcp", destAddrStr, 5*time.Second)
+		}
 		if err != nil {
 			log.Printf("[Direct] Dial Failed: %v", err)
 			return nil, false
 		}
-		return dConn, true
 	}
+	return dConn, true
 }
 
 func defaultPortForMethod(method string) string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -12,7 +13,7 @@ import (
 type lookupIPFunc func(ctx context.Context, network, host string) ([]net.IP, error)
 
 type cacheEntry struct {
-	ip        net.IP
+	ips       []net.IP
 	expiresAt time.Time
 }
 
@@ -53,6 +54,17 @@ func ResolveWithCache(ctx context.Context, addr string) (string, error) {
 	return defaultResolver.Resolve(ctx, addr)
 }
 
+// LookupIPsWithCache returns the resolved IPs for host using an optimistic cache.
+//
+// Behavior:
+//   - If host is already an IP literal, returns it.
+//   - If cache is fresh, returns cached results.
+//   - If cache is stale and DNS fails, returns stale results.
+//   - If there is no cache and DNS fails, returns an error.
+func LookupIPsWithCache(ctx context.Context, host string) ([]net.IP, error) {
+	return defaultResolver.LookupIPs(ctx, host)
+}
+
 // Resolve performs the actual resolution logic on a resolver instance.
 func (r *resolver) Resolve(ctx context.Context, addr string) (string, error) {
 	if addr == "" {
@@ -69,58 +81,75 @@ func (r *resolver) Resolve(ctx context.Context, addr string) (string, error) {
 		return addr, nil
 	}
 
-	now := time.Now()
-	cachedIP, expired := r.lookup(host, now)
-
-	// Fresh cache hit.
-	if cachedIP != nil && !expired {
-		return net.JoinHostPort(cachedIP.String(), port), nil
-	}
-
-	// Need DNS resolution (cache miss or expired).
-	ips, err := r.lookupConcurrently(ctx, host)
+	ips, err := r.LookupIPs(ctx, host)
 	if err != nil {
-		// Optimistic caching: fall back to stale IP if present.
-		if cachedIP != nil {
-			return net.JoinHostPort(cachedIP.String(), port), nil
-		}
-		return "", fmt.Errorf("dns lookup failed for %s: %w", host, err)
+		return "", err
 	}
 
-	// Choose the first IP and update cache.
-	selected := firstNonNilIP(ips)
+	selected := pickPreferredIP(ips)
 	if selected == nil {
-		if cachedIP != nil {
-			// Should be rare, but still honor optimistic cache.
-			return net.JoinHostPort(cachedIP.String(), port), nil
-		}
 		return "", fmt.Errorf("no usable ip found for host %s", host)
 	}
-
-	r.store(host, selected, now)
 	return net.JoinHostPort(selected.String(), port), nil
 }
 
-func (r *resolver) lookup(host string, now time.Time) (net.IP, bool) {
+func (r *resolver) LookupIPs(ctx context.Context, host string) ([]net.IP, error) {
+	hostKey, hostIP := normalizeHost(host)
+	if hostIP != nil {
+		return []net.IP{hostIP}, nil
+	}
+	if hostKey == "" {
+		return nil, fmt.Errorf("empty host")
+	}
+
+	now := time.Now()
+	cachedIPs, expired := r.lookup(hostKey, now)
+
+	if len(cachedIPs) > 0 && !expired {
+		return copyIPs(cachedIPs), nil
+	}
+
+	ips, err := r.lookupConcurrently(ctx, hostKey)
+	if err != nil {
+		if len(cachedIPs) > 0 {
+			return copyIPs(cachedIPs), nil
+		}
+		return nil, fmt.Errorf("dns lookup failed for %s: %w", hostKey, err)
+	}
+
+	ips = normalizeIPs(ips)
+	if len(ips) == 0 {
+		if len(cachedIPs) > 0 {
+			return copyIPs(cachedIPs), nil
+		}
+		return nil, fmt.Errorf("no usable ip found for host %s", hostKey)
+	}
+
+	r.store(hostKey, ips, now)
+	return copyIPs(ips), nil
+}
+
+func (r *resolver) lookup(hostKey string, now time.Time) ([]net.IP, bool) {
 	r.mu.RLock()
-	entry, ok := r.cache[host]
+	entry, ok := r.cache[hostKey]
 	r.mu.RUnlock()
 	if !ok {
 		return nil, false
 	}
 	if now.After(entry.expiresAt) {
-		return entry.ip, true
+		return entry.ips, true
 	}
-	return entry.ip, false
+	return entry.ips, false
 }
 
-func (r *resolver) store(host string, ip net.IP, now time.Time) {
-	if ip == nil {
+func (r *resolver) store(hostKey string, ips []net.IP, now time.Time) {
+	ips = normalizeIPs(ips)
+	if len(ips) == 0 {
 		return
 	}
 	r.mu.Lock()
-	r.cache[host] = cacheEntry{
-		ip:        append(net.IP(nil), ip...), // defensive copy
+	r.cache[hostKey] = cacheEntry{
+		ips:       copyIPs(ips),
 		expiresAt: now.Add(r.ttl),
 	}
 	r.mu.Unlock()
@@ -175,11 +204,81 @@ func (r *resolver) lookupConcurrently(ctx context.Context, host string) ([]net.I
 	return allIPs, nil
 }
 
-func firstNonNilIP(ips []net.IP) net.IP {
+func normalizeHost(host string) (string, net.IP) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "", nil
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimPrefix(host, "[")
+	host = strings.TrimSuffix(host, "]")
+	host = strings.TrimSuffix(host, ".")
+	host = strings.ToLower(host)
+	if ip := net.ParseIP(host); ip != nil {
+		return host, ip
+	}
+	return host, nil
+}
+
+func normalizeIPs(ips []net.IP) []net.IP {
+	if len(ips) == 0 {
+		return nil
+	}
+	out := ips[:0]
 	for _, ip := range ips {
-		if ip != nil {
-			return ip
+		if ip == nil {
+			continue
+		}
+		if ip4 := ip.To4(); ip4 != nil {
+			out = append(out, ip4)
+			continue
+		}
+		if ip16 := ip.To16(); ip16 != nil {
+			out = append(out, ip16)
 		}
 	}
-	return nil
+	if len(out) == 0 {
+		return nil
+	}
+	return preferIPv4First(out)
+}
+
+func preferIPv4First(ips []net.IP) []net.IP {
+	v4 := make([]net.IP, 0, len(ips))
+	v6 := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			v4 = append(v4, ip)
+		} else {
+			v6 = append(v6, ip)
+		}
+	}
+	return append(v4, v6...)
+}
+
+func pickPreferredIP(ips []net.IP) net.IP {
+	ips = normalizeIPs(append([]net.IP(nil), ips...))
+	if len(ips) == 0 {
+		return nil
+	}
+	return ips[0]
+}
+
+func copyIPs(ips []net.IP) []net.IP {
+	if len(ips) == 0 {
+		return nil
+	}
+	out := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		out = append(out, append(net.IP(nil), ip...))
+	}
+	return out
 }

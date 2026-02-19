@@ -2,12 +2,16 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/saba-futai/sudoku/internal/config"
+	"github.com/saba-futai/sudoku/pkg/geodata"
 	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
 )
 
@@ -56,48 +60,50 @@ func (m *MockDialer) Dial(destAddrStr string) (net.Conn, error) {
 	return NewMockConn(nil), nil
 }
 
-func TestDNSCache(t *testing.T) {
-	cache := &DNSCache{
-		cache: make(map[string]dnsCacheEntry),
-		ttl:   100 * time.Millisecond,
+func TestDialTarget_PACAcceptsAnyMatchingIP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/yaml")
+		_, _ = w.Write([]byte("payload:\n  - '1.2.3.0/24'\n"))
+	}))
+	t.Cleanup(srv.Close)
+
+	geoMgr := geodata.NewManager([]string{srv.URL})
+	geoMgr.Update()
+
+	oldLookup := lookupIPsWithCache
+	oldDirectDial := directDial
+	t.Cleanup(func() {
+		lookupIPsWithCache = oldLookup
+		directDial = oldDirectDial
+	})
+
+	lookupIPsWithCache = func(ctx context.Context, host string) ([]net.IP, error) {
+		return []net.IP{
+			net.ParseIP("2001:db8::1"),
+			net.ParseIP("1.2.3.4"),
+		}, nil
 	}
 
-	host := "example.com"
-	ip := net.ParseIP("1.2.3.4")
-
-	// Test Set & Get
-	cache.Set(host, ip)
-	got := cache.Lookup(host)
-	if !got.Equal(ip) {
-		t.Errorf("Cache lookup failed: got %v, want %v", got, ip)
+	var dialed string
+	directDial = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+		dialed = addr
+		return NewMockConn(nil), nil
 	}
 
-	// Test Expiration
-	time.Sleep(150 * time.Millisecond)
-	got = cache.Lookup(host)
-	if got != nil {
-		t.Errorf("Cache expiration failed: got %v, want nil", got)
-	}
-}
-
-func TestDNSCache_RefreshKeepsLatestValue(t *testing.T) {
-	cache := &DNSCache{
-		cache: make(map[string]dnsCacheEntry),
-		ttl:   120 * time.Millisecond,
+	cfg := &config.Config{ProxyMode: "pac"}
+	dialer := &MockDialer{
+		DialFunc: func(destAddrStr string) (net.Conn, error) {
+			t.Fatalf("unexpected proxy dial: %s", destAddrStr)
+			return nil, nil
+		},
 	}
 
-	host := "example.com"
-	ip1 := net.ParseIP("1.2.3.4")
-	ip2 := net.ParseIP("5.6.7.8")
-
-	cache.Set(host, ip1)
-	time.Sleep(70 * time.Millisecond)
-	cache.Set(host, ip2)
-
-	time.Sleep(70 * time.Millisecond)
-	got := cache.Lookup(host)
-	if got == nil || !got.Equal(ip2) {
-		t.Fatalf("expected refreshed ip %v, got %v", ip2, got)
+	_, ok := dialTarget("foo.example:443", nil, cfg, geoMgr, dialer)
+	if !ok {
+		t.Fatalf("expected direct dial success")
+	}
+	if dialed != "1.2.3.4:443" {
+		t.Fatalf("unexpected direct addr: %q", dialed)
 	}
 }
 

@@ -51,8 +51,8 @@ func TestResolve_CacheHitAvoidsDNS(t *testing.T) {
 		t.Fatalf("cache mismatch: %s vs %s", addr1, addr2)
 	}
 
-	if calls.Load() == 0 {
-		t.Fatalf("expected at least one DNS call")
+	if calls.Load() < 2 {
+		t.Fatalf("expected concurrent DNS calls, got %d", calls.Load())
 	}
 }
 
@@ -111,5 +111,30 @@ func TestResolve_InvalidAddress(t *testing.T) {
 	r := newResolver(1*time.Minute, nil)
 	if _, err := r.Resolve(context.Background(), "bad-address"); err == nil {
 		t.Fatalf("expected error for invalid address")
+	}
+}
+
+func TestLookupIPs_PrefersIPv4First(t *testing.T) {
+	lookup := func(ctx context.Context, network, host string) ([]net.IP, error) {
+		switch network {
+		case "ip6":
+			return []net.IP{net.ParseIP("2001:db8::1")}, nil
+		case "ip4":
+			return []net.IP{net.ParseIP("1.2.3.4")}, nil
+		default:
+			return nil, fmt.Errorf("unexpected network: %s", network)
+		}
+	}
+
+	r := newResolver(1*time.Minute, lookup)
+	ips, err := r.LookupIPs(context.Background(), "example.com")
+	if err != nil {
+		t.Fatalf("lookup failed: %v", err)
+	}
+	if len(ips) < 2 {
+		t.Fatalf("expected both v4+v6, got %v", ips)
+	}
+	if ips[0].To4() == nil {
+		t.Fatalf("expected IPv4 first, got %v", ips[0])
 	}
 }

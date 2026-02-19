@@ -62,14 +62,18 @@ type ruleBuildState struct {
 var instance *Manager
 var once sync.Once
 
+func NewManager(urls []string) *Manager {
+	return &Manager{
+		urls:         append([]string(nil), urls...),
+		domainExact:  make(map[string]struct{}),
+		domainSuffix: make(map[string]struct{}),
+	}
+}
+
 // GetInstance 单例模式
 func GetInstance(urls []string) *Manager {
 	once.Do(func() {
-		instance = &Manager{
-			urls:         urls,
-			domainExact:  make(map[string]struct{}),
-			domainSuffix: make(map[string]struct{}),
-		}
+		instance = NewManager(urls)
 		go instance.Update()
 	})
 	return instance
