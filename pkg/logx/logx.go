@@ -32,6 +32,24 @@ func Infof(component, format string, args ...any)  { logf(LevelInfo, component, 
 func Warnf(component, format string, args ...any)  { logf(LevelWarn, component, format, args...) }
 func Errorf(component, format string, args ...any) { logf(LevelError, component, format, args...) }
 
+// Promptf prints a log-styled prompt without a trailing newline.
+// It is intended for interactive CLI input.
+func Promptf(component, format string, args ...any) {
+	initOnce.Do(initConfig)
+	ts := time.Now().Format("15:04:05")
+
+	line := fmt.Sprintf(format, args...)
+	if strings.TrimSpace(component) != "" {
+		component = strings.TrimSpace(component)
+		component = "[" + component + "]"
+	}
+
+	prefix := fmt.Sprintf("%s %s %s", Dim(ts), colorLevel(LevelInfo, strings.ToLower(levelName(LevelInfo))), Magenta(component))
+	writeMu.Lock()
+	_, _ = fmt.Fprint(os.Stdout, strings.TrimSpace(prefix), " ", line)
+	writeMu.Unlock()
+}
+
 func Fatalf(component, format string, args ...any) {
 	Errorf(component, format, args...)
 	os.Exit(1)

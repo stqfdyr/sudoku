@@ -220,7 +220,7 @@ func finalizeWizard(in wizardInput) (*WizardResult, error) {
 		ASCII:              asciiMode,
 		CustomTable:        strings.TrimSpace(in.CustomTable),
 		ProxyMode:          "pac",
-		RuleURLs:           nil,
+		RuleURLs:           config.DefaultPACRuleURLs(),
 		EnablePureDownlink: enablePureDownlink,
 		HTTPMask: config.HTTPMaskConfig{
 			Disable:   in.DisableHTTPMask,
@@ -273,7 +273,7 @@ func promptString(r *bufio.Reader, label, current, fallback string) string {
 	if displayDefault == "" {
 		displayDefault = fallback
 	}
-	fmt.Printf("%s [%s]: ", label, displayDefault)
+	logx.Promptf("Setup", "%s [%s]: ", label, displayDefault)
 	line, _ := r.ReadString('\n')
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -283,7 +283,7 @@ func promptString(r *bufio.Reader, label, current, fallback string) string {
 }
 
 func promptInt(r *bufio.Reader, label string, def int) int {
-	fmt.Printf("%s [%d]: ", label, def)
+	logx.Promptf("Setup", "%s [%d]: ", label, def)
 	line, _ := r.ReadString('\n')
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -291,7 +291,7 @@ func promptInt(r *bufio.Reader, label string, def int) int {
 	}
 	val, err := strconv.Atoi(line)
 	if err != nil {
-		fmt.Printf("Invalid number, using %d\n", def)
+		logx.Warnf("Setup", "Invalid number, using %d", def)
 		return def
 	}
 	return val
