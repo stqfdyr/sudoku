@@ -27,7 +27,8 @@ type Table struct {
 func NewTable(key string, mode string) *Table {
 	t, err := NewTableWithCustom(key, mode, "")
 	if err != nil {
-		logx.Panicf("Init", "failed to build table: %v", err)
+		logx.Errorf("Init", "Failed to build table: %v", err)
+		return nil
 	}
 	return t
 }

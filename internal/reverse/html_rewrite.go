@@ -2,17 +2,9 @@ package reverse
 
 import "bytes"
 
-// rewriteHTMLRootAbsolutePaths rewrites root-absolute URLs in HTML while keeping inline scripts safe.
-//
-// HTML needs generic quote/url() rewriting for attributes, but applying that rewrite to inline JS can
-// corrupt regex literals (e.g. .replace(/"/g, ...)). This function rewrites:
-//   - non-script regions using rewriteRootAbsolutePaths
-//   - <script>...</script> bodies left untouched
+// rewriteHTMLRootAbsolutePaths rewrites root-absolute URLs in HTML while keeping inline scripts intact.
 func rewriteHTMLRootAbsolutePaths(in []byte, prefix string) []byte {
-	if len(in) == 0 {
-		return in
-	}
-	if normalizedPrefixBytes(prefix) == nil {
+	if len(in) == 0 || normalizedPrefixBytes(prefix) == nil {
 		return in
 	}
 
@@ -99,10 +91,7 @@ func indexHTMLScriptOpen(in []byte, from int) int {
 func indexHTMLScriptClose(in []byte, from int) int {
 	const needle = "script"
 	for i := from; i+2+len(needle) <= len(in); i++ {
-		if in[i] != '<' {
-			continue
-		}
-		if in[i+1] != '/' {
+		if in[i] != '<' || in[i+1] != '/' {
 			continue
 		}
 		j := i + 2

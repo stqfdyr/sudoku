@@ -1,0 +1,106 @@
+package app
+
+import (
+	"bufio"
+	"net"
+	"net/http"
+	"strings"
+
+	"github.com/saba-futai/sudoku/internal/config"
+	"github.com/saba-futai/sudoku/internal/tunnel"
+	"github.com/saba-futai/sudoku/pkg/geodata"
+	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
+)
+
+func handleHTTP(conn net.Conn, cfg *config.Config, _ *sudoku.Table, geoMgr *geodata.Manager, dialer tunnel.Dialer) {
+	defer conn.Close()
+
+	req, err := http.ReadRequest(bufio.NewReader(conn))
+	if err != nil {
+		return
+	}
+
+	host := ensureHostPort(req.Host, req.Method)
+	destIP := net.ParseIP(hostOnly(host))
+
+	targetConn, success := dialTarget("TCP", conn.RemoteAddr(), host, destIP, cfg, geoMgr, dialer)
+	if !success {
+		_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		return
+	}
+
+	if req.Method == http.MethodConnect {
+		_, _ = conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		pipeConn(conn, targetConn)
+		return
+	}
+
+	req.RequestURI = ""
+	if req.URL != nil && req.URL.Scheme != "" {
+		req.URL.Scheme = ""
+		req.URL.Host = ""
+	}
+
+	if err := req.Write(targetConn); err != nil {
+		_ = targetConn.Close()
+
+		retryable := req.Body == nil || req.Body == http.NoBody
+		if retryable && req.ContentLength <= 0 {
+			if targetConn2, ok := dialTarget("TCP", conn.RemoteAddr(), host, destIP, cfg, geoMgr, dialer); ok {
+				if err2 := req.Write(targetConn2); err2 == nil {
+					pipeConn(conn, targetConn2)
+					return
+				}
+				_ = targetConn2.Close()
+			}
+		}
+
+		_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		return
+	}
+	pipeConn(conn, targetConn)
+}
+
+func defaultPortForMethod(method string) string {
+	if method == http.MethodConnect {
+		return "443"
+	}
+	return "80"
+}
+
+func ensureHostPort(host string, method string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return host
+	}
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return host
+	}
+
+	port := defaultPortForMethod(method)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		inner := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+		if ip := net.ParseIP(inner); ip != nil {
+			return net.JoinHostPort(ip.String(), port)
+		}
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return net.JoinHostPort(ip.String(), port)
+	}
+	if strings.Contains(host, ":") {
+		// Likely malformed IPv6 literal without brackets; keep as-is and let downstream fail.
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func hostOnly(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		addr = h
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(addr, "["), "]")
+}

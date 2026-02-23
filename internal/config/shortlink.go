@@ -143,7 +143,7 @@ func BuildConfigFromShortLink(link string) (*Config, error) {
 		PaddingMin: 5,
 		PaddingMax: 15,
 		ProxyMode:  "pac",
-		RuleURLs:    DefaultPACRuleURLs(),
+		RuleURLs:   DefaultPACRuleURLs(),
 	}
 
 	if cfg.LocalPort == 0 {

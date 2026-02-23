@@ -3,6 +3,11 @@
 ## Unreleased
 - TBD
 
+## v0.2.6（2026-02-23）
+- `refactor`: 大规模模块化重构（不改协议/配置语义）：拆分 HTTPMask tunnel client/server 逻辑、拆分客户端 mixed proxy（SOCKS4/5/HTTP/路由/拨号）、拆分 reverse 重写逻辑并补单测，整体显著降低单文件复杂度与重复代码，便于后续维护与定位问题。
+- `httpmask`: masker 的 User-Agent/paths/content-types 列表改为 embed 资源，代码更精简且便于后续按需调整指纹数据集。
+- `sudoku/table`: `NewTable` 构建失败不再 `panic`，改为记录错误并返回 `nil`（仅影响作为 Go 库被调用的异常分支；正常配置不会触发）。
+
 ## v0.2.3（2026-02-14）
 - `proxy/pac`: 修复 PAC 路由中的 DNS 缓存过期实现，移除 `time.AfterFunc` 删除策略导致的“旧定时器误删新值”与高并发定时器膨胀风险；改为按过期时间惰性回收，提升稳定性与可维护性。
 - `proxy/pac`: PAC 的回查 DNS 从 `ip4` 扩展为 `ip`，允许同时利用 A/AAAA 结果进行规则判断。
