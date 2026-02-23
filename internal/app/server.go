@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/saba-futai/sudoku/internal/config"
@@ -17,9 +20,26 @@ import (
 	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
 )
 
+// logUserInfo logs an info message, prepending [User:hash] when userHash is non-empty.
+func logUserInfo(tag, userHash, format string, args ...interface{}) {
+	if userHash != "" {
+		format = "[User:" + userHash + "] " + format
+	}
+	logx.Infof(tag, format, args...)
+}
+
+// logUserWarn logs a warning message, prepending [User:hash] when userHash is non-empty.
+func logUserWarn(tag, userHash, format string, args ...interface{}) {
+	if userHash != "" {
+		format = "[User:" + userHash + "] " + format
+	}
+	logx.Warnf(tag, format, args...)
+}
+
 func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 	logx.InstallStd()
-	// 1. 监听 TCP 端口
+
+	// Listen on TCP port.
 	l, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.LocalPort))
 	if err != nil {
 		logx.Fatalf("Server", "%v", err)
@@ -53,10 +73,25 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 		})
 	}
 
+	// Graceful shutdown on SIGINT / SIGTERM.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		logx.Infof("Server", "Shutting down...")
+		l.Close()
+	}()
+
 	for {
 		c, err := l.Accept()
 		if err != nil {
-			continue
+			// If the listener was closed by signal, exit gracefully.
+			select {
+			case <-sigCh:
+				return
+			default:
+				continue
+			}
 		}
 		go handleServerConn(c, cfg, tables, tunnelSrv, revMgr)
 	}
@@ -118,11 +153,7 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 		userHash = meta.UserHash
 	}
 
-	// ==========================================
-	// 5. 连接目标地址
-	// ==========================================
-
-	// 判断是否为 UoT (UDP over TCP) 会话
+	// Read the first byte to detect session type (UoT / Mux / Reverse / normal).
 	firstByte := make([]byte, 1)
 	if _, err := io.ReadFull(tunnelConn, firstByte); err != nil {
 		logx.Warnf("Server", "Failed to read first byte: %v", err)
@@ -130,52 +161,24 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 	}
 
 	if firstByte[0] == tunnel.UoTMagicByte {
-		if userHash != "" {
-			logx.Infof("Server/UoT", "[User:%s] session start", userHash)
-		} else {
-			logx.Infof("Server/UoT", "session start")
-		}
+		logUserInfo("Server/UoT", userHash, "session start")
 		if err := tunnel.HandleUoTServer(tunnelConn); err != nil {
-			if userHash != "" {
-				logx.Warnf("Server/UoT", "[User:%s] session end: %v", userHash, err)
-			} else {
-				logx.Warnf("Server/UoT", "session end: %v", err)
-			}
+			logUserWarn("Server/UoT", userHash, "session end: %v", err)
 		} else {
-			if userHash != "" {
-				logx.Infof("Server/UoT", "[User:%s] session end", userHash)
-			} else {
-				logx.Infof("Server/UoT", "session end")
-			}
+			logUserInfo("Server/UoT", userHash, "session end")
 		}
 		return
 	}
 
 	if firstByte[0] == tunnel.MuxMagicByte {
-		if userHash != "" {
-			logx.Infof("Server/Mux", "[User:%s] session start", userHash)
-		} else {
-			logx.Infof("Server/Mux", "session start")
-		}
+		logUserInfo("Server/Mux", userHash, "session start")
 		logConnect := func(addr string) {
-			if userHash != "" {
-				logx.Infof("Server/Mux", "[User:%s] Connecting to %s", userHash, addr)
-			} else {
-				logx.Infof("Server/Mux", "Connecting to %s", addr)
-			}
+			logUserInfo("Server/Mux", userHash, "Connecting to %s", addr)
 		}
 		if err := tunnel.HandleMuxServer(tunnelConn, logConnect); err != nil {
-			if userHash != "" {
-				logx.Warnf("Server/Mux", "[User:%s] session end: %v", userHash, err)
-			} else {
-				logx.Warnf("Server/Mux", "session end: %v", err)
-			}
+			logUserWarn("Server/Mux", userHash, "session end: %v", err)
 		} else {
-			if userHash != "" {
-				logx.Infof("Server/Mux", "[User:%s] session end", userHash)
-			} else {
-				logx.Infof("Server/Mux", "session end")
-			}
+			logUserInfo("Server/Mux", userHash, "session end")
 		}
 		return
 	}
@@ -185,42 +188,26 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 			logx.Warnf("Server/Reverse", "reverse proxy not enabled (missing reverse.listen)")
 			return
 		}
-		if userHash != "" {
-			logx.Infof("Server/Reverse", "[User:%s] session start", userHash)
-		} else {
-			logx.Infof("Server/Reverse", "session start")
-		}
+		logUserInfo("Server/Reverse", userHash, "session start")
 		if err := reverse.HandleServerSession(tunnelConn, userHash, revMgr); err != nil {
-			if userHash != "" {
-				logx.Warnf("Server/Reverse", "[User:%s] session end: %v", userHash, err)
-			} else {
-				logx.Warnf("Server/Reverse", "session end: %v", err)
-			}
+			logUserWarn("Server/Reverse", userHash, "session end: %v", err)
 		} else {
-			if userHash != "" {
-				logx.Infof("Server/Reverse", "[User:%s] session end", userHash)
-			} else {
-				logx.Infof("Server/Reverse", "session end")
-			}
+			logUserInfo("Server/Reverse", userHash, "session end")
 		}
 		return
 	}
 
-	// 非 UoT：将预读的字节放回流中以兼容旧协议
+	// Not a special session: replay the peeked byte and read the target address.
 	prefixedConn := tunnel.NewPreBufferedConn(tunnelConn, firstByte)
 
-	// 从上行连接读取目标地址
+	// Read target address from the uplink.
 	destAddrStr, _, _, err := protocol.ReadAddress(prefixedConn)
 	if err != nil {
 		logx.Warnf("Server", "Failed to read target address: %v", err)
 		return
 	}
 
-	if userHash != "" {
-		logx.Infof("Server", "[User:%s] Connecting to %s", userHash, destAddrStr)
-	} else {
-		logx.Infof("Server", "Connecting to %s", destAddrStr)
-	}
+	logUserInfo("Server", userHash, "Connecting to %s", destAddrStr)
 
 	target, err := net.DialTimeout("tcp", destAddrStr, 10*time.Second)
 	if err != nil {
@@ -228,8 +215,6 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 		return
 	}
 
-	// ==========================================
-	// 6. 转发数据
-	// ==========================================
+	// Relay data.
 	pipeConn(prefixedConn, target)
 }

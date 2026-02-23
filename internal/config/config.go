@@ -12,12 +12,12 @@ type Config struct {
 	SuspiciousAction   string       `json:"suspicious_action"` // "fallback" or "silent"
 	PaddingMin         int          `json:"padding_min"`
 	PaddingMax         int          `json:"padding_max"`
-	RuleURLs           []string     `json:"rule_urls"`            // 留空则使用默认，支持 "global", "direct" 关键字
-	ProxyMode          string       `json:"proxy_mode"`           // 运行时状态，非JSON字段，由Load解析逻辑填充
-	ASCII              string       `json:"ascii"`                // "prefer_entropy" (默认): 低熵, "prefer_ascii": 纯ASCII字符，高熵
-	CustomTable        string       `json:"custom_table"`         // 可选，定义 X/P/V 布局，如 "xpxvvpvv"
-	CustomTables       []string     `json:"custom_tables"`        // 可选，多套 X/P/V 布局轮换
-	EnablePureDownlink bool         `json:"enable_pure_downlink"` // 启用纯 Sudoku 下行；false 时使用带宽优化下行编码
+	RuleURLs           []string     `json:"rule_urls"`            // Empty = use defaults; supports "global", "direct" keywords
+	ProxyMode          string       `json:"proxy_mode"`           // Runtime state, populated by Load logic
+	ASCII              string       `json:"ascii"`                // "prefer_entropy" (default): low entropy; "prefer_ascii": pure ASCII, high entropy
+	CustomTable        string       `json:"custom_table"`         // Optional: defines X/P/V layout, e.g. "xpxvvpvv"
+	CustomTables       []string     `json:"custom_tables"`        // Optional: rotate among multiple X/P/V layouts
+	EnablePureDownlink bool         `json:"enable_pure_downlink"` // Enable pure Sudoku downlink; false uses bandwidth-optimized packed encoding
 
 	HTTPMask HTTPMaskConfig `json:"httpmask"`
 

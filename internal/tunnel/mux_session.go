@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -172,11 +173,12 @@ func (s *muxSession) readLoop() {
 		}
 		frameType := header[0]
 		streamID := binary.BigEndian.Uint32(header[1:5])
-		n := int(binary.BigEndian.Uint32(header[5:9]))
-		if n < 0 || n > muxMaxFrameSize {
-			s.closeWithError(fmt.Errorf("invalid mux frame length: %d", n))
+		payloadLen := binary.BigEndian.Uint32(header[5:9])
+		if payloadLen > muxMaxFrameSize {
+			s.closeWithError(fmt.Errorf("invalid mux frame length: %d", payloadLen))
 			return
 		}
+		n := int(payloadLen)
 
 		var payload []byte
 		if n > 0 {
@@ -230,7 +232,7 @@ func (s *muxSession) readLoop() {
 			if st == nil {
 				continue
 			}
-			msg := stringsTrimASCII(payload)
+			msg := strings.TrimSpace(string(payload))
 			if msg == "" {
 				msg = "reset"
 			}
@@ -253,32 +255,6 @@ func writeFull(w io.Writer, b []byte) error {
 		b = b[n:]
 	}
 	return nil
-}
-
-func stringsTrimASCII(b []byte) string {
-	// Avoid importing strings in this low-level file; keep a tiny ASCII trim.
-	i := 0
-	j := len(b)
-	for i < j {
-		c := b[i]
-		if c != ' ' && c != '\n' && c != '\r' && c != '\t' {
-			break
-		}
-		i++
-	}
-	for j > i {
-		c := b[j-1]
-		if c != ' ' && c != '\n' && c != '\r' && c != '\t' {
-			break
-		}
-		j--
-	}
-	if i >= j {
-		return ""
-	}
-	out := make([]byte, j-i)
-	copy(out, b[i:j])
-	return string(out)
 }
 
 type muxStream struct {

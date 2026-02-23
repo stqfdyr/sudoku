@@ -12,7 +12,7 @@ import (
 	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
 )
 
-func TestSudokuTunnel_AdaptiveDialer(t *testing.T) {
+func TestSudokuTunnel_StandardDialer(t *testing.T) {
 	cfg := &config.Config{
 		Mode:               "server",
 		Transport:          "tcp",
@@ -65,7 +65,7 @@ func TestSudokuTunnel_AdaptiveDialer(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	dialer := &AdaptiveDialer{
+	dialer := &StandardDialer{
 		BaseDialer: BaseDialer{
 			Config: cfg,
 			Tables: []*sudoku.Table{table},

@@ -237,17 +237,17 @@ func ClientHandshake(conn net.Conn, cfg *config.Config, table *sudoku.Table, pri
 		return nil, fmt.Errorf("enable_pure_downlink=false requires AEAD")
 	}
 
-	// 3. Sudoku encapsulation
+	// Sudoku encapsulation
 	obfsConn := buildObfsConnForClient(conn, table, cfg)
 
-	// 4. Encryption
+	// Encryption
 	cConn, err := crypto.NewAEADConn(obfsConn, cfg.Key, cfg.AEAD)
 	if err != nil {
 
 		return nil, fmt.Errorf("crypto setup failed: %w", err)
 	}
 
-	// 5. Handshake
+	// Handshake
 	handshake := make([]byte, 16)
 	binary.BigEndian.PutUint64(handshake[:8], uint64(time.Now().Unix()))
 

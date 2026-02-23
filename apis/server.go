@@ -37,8 +37,8 @@ import (
 	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
 )
 
-// bufferedConn 这是一个内部辅助结构，用于将 bufio 多读的数据传递给后续层
-// 必须实现 net.Conn
+// bufferedConn is an internal wrapper that passes bufio over-read data to subsequent layers.
+// It must implement net.Conn.
 type bufferedConn struct {
 	net.Conn
 	r *bufio.Reader
@@ -173,20 +173,30 @@ func selectTableByProbe(r *bufio.Reader, cfg *ProtocolConfig, tables []*sudoku.T
 	}
 }
 
-// ServerHandshake 执行 Sudoku 服务端握手逻辑
-// 输入: rawConn (刚 Accept 的 TCP 连接)
-// 输出:
-//  1. tunnelConn: 解密后的透明连接，可直接用于应用层数据传输
-//  2. targetAddr: 客户端想要访问的目标地址
-//  3. error: 如果是 *HandshakeError 类型，包含了用于 Fallback 的完整数据
+// HandshakeResult bundles all outputs from the server-side handshake into a single struct
+// so that callers can pick the fields they need without multiple function variants.
+type HandshakeResult struct {
+	Conn     net.Conn          // Upgraded tunnel connection (decrypted / de-obfuscated).
+	UserHash string            // Stable per-user identifier (hex, 16 chars). May be empty.
+	Fail     func(error) error // Wraps an error into HandshakeError with recorded data for fallback.
+}
+
+// ServerHandshakeCore performs the full server-side handshake and returns a HandshakeResult.
+// It does NOT read the target address — the caller decides what to do with the tunnel.
+func ServerHandshakeCore(rawConn net.Conn, cfg *ProtocolConfig) (*HandshakeResult, error) {
+	conn, userHash, fail, err := serverHandshakeCoreWithUserHash(rawConn, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &HandshakeResult{Conn: conn, UserHash: userHash, Fail: fail}, nil
+}
+
+// ServerHandshake performs the Sudoku server-side handshake.
 //
-// 握手过程分为多个层次：
-//  1. HTTP 伪装层：验证 HTTP POST 请求头
-//  2. Sudoku 混淆层：解码 Sudoku 谜题
-//  3. AEAD 加密层：解密并验证数据
-//  4. 协议层：验证时间戳握手、读取目标地址
+// It completes the full handshake pipeline (HTTP mask → Sudoku decoding → AEAD decryption →
+// timestamp verification) and then reads the target address from the tunnel.
 //
-// 任何层次失败都会返回 HandshakeError，其中包含该层及之前所有层读取的数据
+// On failure, the returned error may be a *HandshakeError containing raw data for fallback handling.
 func ServerHandshake(rawConn net.Conn, cfg *ProtocolConfig) (net.Conn, string, error) {
 	conn, targetAddr, _, err := ServerHandshakeWithUserHash(rawConn, cfg)
 	return conn, targetAddr, err
@@ -207,7 +217,7 @@ func ServerHandshakeWithUserHash(rawConn net.Conn, cfg *ProtocolConfig) (net.Con
 		return nil, "", "", err
 	}
 
-	// 4. 读取目标地址
+	// Read target address from the tunnel.
 	targetAddr, _, _, err := protocol.ReadAddress(conn)
 	if err != nil {
 		_ = conn.Close()

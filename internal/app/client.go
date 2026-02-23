@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/saba-futai/sudoku/internal/config"
 	"github.com/saba-futai/sudoku/internal/tunnel"
@@ -91,7 +94,7 @@ func RunClient(cfg *config.Config, tables []*sudoku.Table) {
 		dialer = &tunnel.MuxDialer{BaseDialer: baseDialer}
 		logx.Infof("Init", "Enabled HTTPMask session mux (single tunnel, multi-target)")
 	} else {
-		dialer = &tunnel.AdaptiveDialer{
+		dialer = &tunnel.StandardDialer{
 			BaseDialer: baseDialer,
 		}
 	}
@@ -110,6 +113,15 @@ func RunClient(cfg *config.Config, tables []*sudoku.Table) {
 	logx.Infof("Client", "Client (Mixed) on :%d -> %s | Mode: %s | Rules: %d",
 		cfg.LocalPort, cfg.ServerAddress, cfg.ProxyMode, len(cfg.RuleURLs))
 
+	// Graceful shutdown on SIGINT / SIGTERM.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		logx.Infof("Client", "Shutting down...")
+		l.Close()
+	}()
+
 	var primaryTable *sudoku.Table
 	if len(tables) > 0 {
 		primaryTable = tables[0]
@@ -117,7 +129,12 @@ func RunClient(cfg *config.Config, tables []*sudoku.Table) {
 	for {
 		c, err := l.Accept()
 		if err != nil {
-			continue
+			select {
+			case <-sigCh:
+				return
+			default:
+				continue
+			}
 		}
 		go handleMixedConn(c, cfg, primaryTable, geoMgr, dialer)
 	}

@@ -26,23 +26,23 @@ type PackedConn struct {
 	table  *Table
 	reader *bufio.Reader
 
-	// 读缓冲
+	// Read buffer
 	rawBuf      []byte
-	pendingData []byte // 解码后尚未被 Read 取走的字节
+	pendingData []byte // Decoded bytes not yet consumed by Read
 
-	// 写缓冲与状态
+	// Write buffer and state
 	writeMu  sync.Mutex
 	writeBuf []byte
 	bitBuf   uint64 // pending bits (MSB-first)
 	bitCount int    // number of valid pending bits in bitBuf
 
-	// 读状态
+	// Read state
 	readBitBuf uint64 // pending bits (MSB-first)
 	readBits   int    // number of valid pending bits in readBitBuf
 
-	// 随机数与填充控制 - 使用整数阈值随机，与 Conn 一致
+	// RNG and padding control — uses integer-threshold random, consistent with Conn
 	rng              *rand.Rand
-	paddingThreshold uint64 // 与 Conn 保持一致的随机概率模型
+	paddingThreshold uint64 // Same probability model as Conn
 	padMarker        byte
 	padPool          []byte
 }
@@ -109,8 +109,8 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 	pc.writeMu.Lock()
 	defer pc.writeMu.Unlock()
 
-	// 1. 预分配内存，避免 append 导致的多次扩容
-	// 预估：原数据 * 1.5 (4/3 + padding 余量)
+	// 1. Pre-allocate memory to avoid repeated append expansions.
+	// Estimate: original data * 1.5 (4/3 + padding margin)
 	needed := len(p)*3/2 + 32
 	if cap(pc.writeBuf) < needed {
 		pc.writeBuf = make([]byte, 0, needed)
@@ -120,7 +120,7 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 	i := 0
 	n := len(p)
 
-	// 2. 头部对齐处理 (Slow Path)
+	// 2. Header alignment (Slow Path)
 	for pc.bitCount > 0 && i < n {
 		out = pc.maybeAddPadding(out)
 		b := p[i]
@@ -139,9 +139,9 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 		}
 	}
 
-	// 3. 极速批量处理 (Fast Path) - 每次处理 12 字节 → 生成 16 个编码组
+	// 3. Fast batch processing (Fast Path) — process 12 bytes at a time → 16 encoded groups
 	for i+11 < n {
-		// 处理 4 组，每组 3 字节
+		// Process 4 batches, each of 3 bytes
 		for batch := 0; batch < 4; batch++ {
 			b1, b2, b3 := p[i], p[i+1], p[i+2]
 			i += 3
@@ -158,7 +158,7 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 		}
 	}
 
-	// 4. 处理剩余的 3 字节块
+	// 4. Process remaining 3-byte blocks
 	for i+2 < n {
 		b1, b2, b3 := p[i], p[i+1], p[i+2]
 		i += 3
@@ -174,7 +174,7 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 		out = pc.appendGroup(out, g4)
 	}
 
-	// 5. 尾部处理 (Tail Path) - 处理剩余的 1 或 2 个字节
+	// 5. Tail processing (Tail Path) — handle remaining 1 or 2 bytes
 	for ; i < n; i++ {
 		b := p[i]
 		pc.bitBuf = (pc.bitBuf << 8) | uint64(b)
@@ -191,7 +191,7 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 		}
 	}
 
-	// 6. 处理残留位
+	// 6. Flush residual bits
 	if pc.bitCount > 0 {
 		group := byte(pc.bitBuf << (6 - pc.bitCount))
 		pc.bitBuf = 0
@@ -200,10 +200,10 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 		out = append(out, pc.padMarker)
 	}
 
-	// 尾部可能添加 padding
+	// Possibly append trailing padding
 	out = pc.maybeAddPadding(out)
 
-	// 发送数据
+	// Send data
 	if len(out) > 0 {
 		_, err := pc.Conn.Write(out)
 		pc.writeBuf = out[:0]
@@ -228,7 +228,7 @@ func (pc *PackedConn) Flush() error {
 		out = append(out, pc.padMarker)
 	}
 
-	// 尾部随机添加 padding
+	// Possibly append trailing padding
 	out = pc.maybeAddPadding(out)
 
 	if len(out) > 0 {
@@ -241,16 +241,16 @@ func (pc *PackedConn) Flush() error {
 
 // Read decodes hint bytes back into the original byte stream.
 func (pc *PackedConn) Read(p []byte) (int, error) {
-	// 1. 优先返回待处理区的数据
+	// 1. Return pending decoded data first
 	if n, ok := drainPending(p, &pc.pendingData); ok {
 		return n, nil
 	}
 
-	// 2. 循环读取直到解出数据或出错
+	// 2. Keep reading until data is decoded or an error occurs
 	for {
 		nr, rErr := pc.reader.Read(pc.rawBuf)
 		if nr > 0 {
-			// 缓存频繁访问的变量
+			// Cache frequently accessed variables
 			rBuf := pc.readBitBuf
 			rBits := pc.readBits
 			padMarker := pc.padMarker
@@ -300,17 +300,17 @@ func (pc *PackedConn) Read(p []byte) (int, error) {
 		}
 	}
 
-	// 3. 返回解码后的数据 - 优化：避免底层数组泄漏
+	// 3. Return decoded data — avoid underlying array leaks
 	n, _ := drainPending(p, &pc.pendingData)
 	return n, nil
 }
 
-// getPaddingByte 从 Pool 中随机取 Padding 字节
+// getPaddingByte picks a random padding byte from the pool.
 func (pc *PackedConn) getPaddingByte() byte {
 	return pc.padPool[pc.rng.Intn(len(pc.padPool))]
 }
 
-// encodeGroup 编码 6-bit 组
+// encodeGroup encodes a 6-bit group.
 func (pc *PackedConn) encodeGroup(group byte) byte {
 	return pc.table.layout.encodeGroup(group)
 }

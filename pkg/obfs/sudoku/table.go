@@ -18,7 +18,7 @@ type Table struct {
 	EncodeTable [256][][4]byte
 	DecodeMap   map[uint32]byte
 	PaddingPool []byte
-	IsASCII     bool // 标记当前模式
+	IsASCII     bool // Marks the current encoding mode
 	layout      *byteLayout
 }
 
@@ -51,7 +51,7 @@ func NewTableWithCustom(key string, mode string, customPattern string) (*Table, 
 	}
 	t.PaddingPool = append(t.PaddingPool, layout.paddingPool...)
 
-	// 生成数独网格
+	// Generate Sudoku grids
 	grids := allGrids()
 	h := sha256.New()
 	h.Write([]byte(key))
@@ -64,7 +64,7 @@ func NewTableWithCustom(key string, mode string, customPattern string) (*Table, 
 		shuffledGrids[i], shuffledGrids[j] = shuffledGrids[j], shuffledGrids[i]
 	})
 
-	// 构建映射表
+	// Build encoding/decoding maps
 	for byteVal := 0; byteVal < 256; byteVal++ {
 		targetGrid := shuffledGrids[byteVal]
 		for _, positions := range hintPositions {

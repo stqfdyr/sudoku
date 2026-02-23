@@ -28,7 +28,7 @@ const (
 	lanRange4End   = 2147483647 // 127.255.255.255
 )
 
-// IPRange 表示一个 IP 区间 [Start, End]
+// IPRange represents an IP interval [Start, End]
 type IPRange struct {
 	Start uint32
 	End   uint32
@@ -42,8 +42,8 @@ type IPv6Range struct {
 type Manager struct {
 	ipRanges     []IPRange
 	ipv6Ranges   []IPv6Range
-	domainExact  map[string]struct{} // 精确匹配 DOMAIN
-	domainSuffix map[string]struct{} // 后缀匹配 DOMAIN-SUFFIX
+	domainExact  map[string]struct{} // Exact match: DOMAIN
+	domainSuffix map[string]struct{} // Suffix match: DOMAIN-SUFFIX
 	mu           sync.RWMutex
 	urls         []string
 }
@@ -60,7 +60,7 @@ func (m Match) String() string {
 	return fmt.Sprintf("%s(%s)", m.Kind, m.Value)
 }
 
-// RuleSet 用于解析 YAML 格式的 payload
+// RuleSet is used to parse YAML-formatted payloads.
 type RuleSet struct {
 	Payload []string `yaml:"payload"`
 }
@@ -83,7 +83,7 @@ func NewManager(urls []string) *Manager {
 	}
 }
 
-// GetInstance 单例模式
+// GetInstance returns the singleton Manager.
 func GetInstance(urls []string) *Manager {
 	once.Do(func() {
 		instance = NewManager(urls)
@@ -104,7 +104,7 @@ func (m *Manager) Update() {
 		m.downloadAndParse(u, state)
 	}
 
-	// 优化 IP 区间
+	// Optimize IP ranges by merging overlapping intervals.
 	mergedIPs := mergeRanges(state.ipv4)
 	mergedIPv6 := mergeIPv6Ranges(state.ipv6)
 
@@ -128,14 +128,14 @@ func (m *Manager) downloadAndParse(url string, state *ruleBuildState) {
 	}
 	defer resp.Body.Close()
 
-	// 读取全部内容
+	// Read the full response body.
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logx.Warnf("GeoData", "Failed to read body from %s: %v", url, err)
 		return
 	}
 
-	// 1. 尝试作为 YAML 解析
+	// 1. Try parsing as YAML.
 	var rs RuleSet
 	if err := yaml.Unmarshal(body, &rs); err == nil && len(rs.Payload) > 0 {
 		for _, rule := range rs.Payload {
@@ -144,8 +144,8 @@ func (m *Manager) downloadAndParse(url string, state *ruleBuildState) {
 		return
 	}
 
-	// 2. 兼容模式：如果 YAML 解析失败（例如是纯文本列表），则按行解析
-	// 这能兼容一些纯文本的 .list 文件，同时通过上面的逻辑支持统一的 YAML payload
+	// 2. Fallback: if YAML parsing failed (e.g. plain-text list), parse line by line.
+	// This supports plain-text .list files, while the above path handles unified YAML payloads.
 	scanner := bytes.NewBuffer(body)
 	for {
 		line, err := scanner.ReadString('\n')
@@ -159,15 +159,15 @@ func (m *Manager) downloadAndParse(url string, state *ruleBuildState) {
 	}
 }
 
-// parseRule 统一处理单行规则字符串
+// parseRule processes a single rule line.
 func parseRule(line string, state *ruleBuildState) {
 	line = strings.TrimSpace(line)
 	if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") {
 		return
 	}
 
-	// 1. 尝试解析 Clash 格式: TYPE,VALUE,...
-	// 格式如: DOMAIN,baidu.com 或 IP-CIDR,1.2.3.4/24,no-resolve
+	// 1. Try parsing Clash format: TYPE,VALUE,...
+	// e.g. DOMAIN,baidu.com or IP-CIDR,1.2.3.4/24,no-resolve
 	parts := strings.Split(line, ",")
 	if len(parts) >= 2 {
 		ruleType := strings.TrimSpace(strings.ToUpper(parts[0]))
@@ -188,7 +188,7 @@ func parseRule(line string, state *ruleBuildState) {
 		return
 	}
 
-	// 2. 尝试解析纯 CIDR 或 IP
+	// 2. Try parsing as plain CIDR or IP.
 	parseIPLine(line, state)
 }
 
@@ -326,8 +326,8 @@ func (m *Manager) MatchCN(host string, ip net.IP) (bool, Match) {
 	return false, Match{}
 }
 
-// IsCN 检查目标是否匹配 CN 规则 (域名优先，其次 IP)
-// host 可以是域名或 IP 字符串
+// IsCN checks whether the target matches CN rules (domain first, then IP).
+// host can be a domain name or an IP string.
 func (m *Manager) IsCN(host string, ip net.IP) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

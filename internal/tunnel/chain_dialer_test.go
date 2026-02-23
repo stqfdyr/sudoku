@@ -115,7 +115,7 @@ func TestSudokuTunnel_ChainDialer(t *testing.T) {
 		t.Fatalf("finalize client config: %v", err)
 	}
 
-	dialer := &AdaptiveDialer{
+	dialer := &StandardDialer{
 		BaseDialer: BaseDialer{
 			Config: clientCfg,
 			Tables: []*sudoku.Table{table},

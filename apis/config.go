@@ -27,19 +27,19 @@ import (
 	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
 )
 
-// ProtocolConfig 定义了 Sudoku 协议栈所需的所有参数
+// ProtocolConfig defines all parameters required by the Sudoku protocol stack.
 //
-// Sudoku 协议是一个多层的加密隧道协议：
-//  1. HTTP 伪装层：伪装成 HTTP POST 请求
-//  2. Sudoku 混淆层：使用数独谜题编码混淆流量特征
-//  3. AEAD 加密层：提供机密性和完整性保护
-//  4. 协议层：处理握手、地址传输等
+// The Sudoku protocol is a multi-layer encrypted tunnel:
+//  1. HTTP mask layer: disguises traffic as HTTP POST requests
+//  2. Sudoku obfuscation layer: encodes data using Sudoku puzzle patterns
+//  3. AEAD encryption layer: provides confidentiality and integrity
+//  4. Protocol layer: handles handshake, address transfer, etc.
 type ProtocolConfig struct {
-	// ============ 基础连接信息 ============
+	// ============ Connection Info ============
 
-	// ServerAddress 服务器地址 (仅客户端使用)
-	// 格式: "host:port" 或 "ip:port"
-	// 例如: "example.com:443" 或 "1.2.3.4:8080"
+	// ServerAddress is the server address (client-side only).
+	// Format: "host:port" or "ip:port"
+	// Example: "example.com:443" or "1.2.3.4:8080"
 	ServerAddress string
 
 	// ChainHops enables multi-hop (chained) Sudoku proxying.
@@ -51,23 +51,23 @@ type ProtocolConfig struct {
 	// All hops share the same Key/AEAD/Table settings in this ProtocolConfig.
 	ChainHops []string
 
-	// ============ 加密与混淆 ============
+	// ============ Encryption & Obfuscation ============
 
-	// Key 预共享密钥，用于 AEAD 加密
-	// 字符串两端一致即可；可直接使用 "./sudoku -keygen" 生成的密钥字符串或自行约定共享密钥
+	// Key is the pre-shared key used for AEAD encryption.
+	// Both sides must agree on this value; use "./sudoku -keygen" to generate one.
 	Key string
 
-	// AEADMethod 指定使用的 AEAD 加密算法
-	// 有效值:
-	//   - "aes-128-gcm": AES-128-GCM (较快，硬件加速支持好)
-	//   - "chacha20-poly1305": ChaCha20-Poly1305 (纯软件实现性能好)
-	//   - "none": 不加密 (仅用于测试，生产环境禁用)
+	// AEADMethod specifies the AEAD cipher.
+	// Valid values:
+	//   - "aes-128-gcm": AES-128-GCM (fast, good hardware acceleration)
+	//   - "chacha20-poly1305": ChaCha20-Poly1305 (good pure-software performance)
+	//   - "none": no encryption (testing only, never use in production)
 	AEADMethod string
 
-	// Table Sudoku 编码映射表 (客户端和服务端必须相同)
-	// 使用 sudoku.NewTable(seed, "prefer_ascii"|"prefer_entropy") 或
-	// sudoku.NewTableWithCustom(seed, "prefer_entropy", "<xpxvvpvv>") 创建
-	// 不能为 nil
+	// Table is the Sudoku encoding map (must be identical on client and server).
+	// Create with sudoku.NewTable(seed, "prefer_ascii"|"prefer_entropy") or
+	// sudoku.NewTableWithCustom(seed, "prefer_entropy", "<xpxvvpvv>").
+	// Must not be nil (unless Tables is set).
 	Table *sudoku.Table
 
 	// Tables is an optional candidate set for table rotation.
@@ -76,42 +76,43 @@ type ProtocolConfig struct {
 	// When Tables is set, Table may be nil.
 	Tables []*sudoku.Table
 
-	// ============ Sudoku 填充参数 ============
+	// ============ Sudoku Padding ============
 
-	// PaddingMin 最小填充率 (0-100)
-	// 在编码时随机插入填充字节的最小概率百分比
+	// PaddingMin is the minimum padding rate (0-100).
+	// Minimum probability (%) of inserting a padding byte during encoding.
 	PaddingMin int
 
-	// PaddingMax 最大填充率 (0-100)
-	// 在编码时随机插入填充字节的最大概率百分比
-	// 必须 >= PaddingMin
+	// PaddingMax is the maximum padding rate (0-100).
+	// Maximum probability (%) of inserting a padding byte during encoding.
+	// Must be >= PaddingMin.
 	PaddingMax int
 
-	// EnablePureDownlink 是否保持纯 Sudoku 下行
-	// false 时启用带宽优化的 6bit 拆分下行，要求 AEAD 启用
+	// EnablePureDownlink controls downlink encoding.
+	// When false, bandwidth-optimized 6-bit packed downlink is used (requires AEAD).
 	EnablePureDownlink bool
 
-	// ============ 客户端特有字段 ============
+	// ============ Client-Only Fields ============
 
-	// TargetAddress 客户端想要访问的最终目标地址 (仅客户端使用)
-	// 格式: "host:port"
-	// 例如: "google.com:443" 或 "1.1.1.1:53"
+	// TargetAddress is the final destination the client wants to reach (client-side only).
+	// Format: "host:port"
+	// Example: "google.com:443" or "1.1.1.1:53"
 	TargetAddress string
 
-	// ============ 服务端特有字段 ============
+	// ============ Server-Only Fields ============
 
-	// HandshakeTimeoutSeconds 握手超时时间（秒）(仅服务端使用)
-	// 推荐值: 5-10
-	// 设置过小可能导致慢速网络握手失败
-	// 设置过大可能使服务器容易受到慢速攻击
+	// HandshakeTimeoutSeconds is the handshake timeout in seconds (server-side only).
+	// Recommended: 5-10.
+	// Too small may cause failures on slow networks.
+	// Too large may make the server vulnerable to slowloris attacks.
 	HandshakeTimeoutSeconds int
 
-	// ============ 通用开关 ============
+	// ============ General Switches ============
 
-	// DisableHTTPMask 是否禁用 HTTP 伪装层
-	// 默认 false (启用伪装)
-	// 如果为 true，客户端不发送伪装头，服务端也不检测伪装头
-	// 注意：服务端支持自动检测，即使此项为 false，也能处理不带伪装头的客户端（前提是首字节不匹配 POST）
+	// DisableHTTPMask disables the HTTP mask layer.
+	// Default false (mask enabled).
+	// When true, the client does not send a mask header and the server does not check for one.
+	// Note: the server supports auto-detection, so even with this set to false it can handle
+	// clients without a mask header (as long as the first bytes don't look like an HTTP method).
 	DisableHTTPMask bool
 
 	// HTTPMaskMode controls how the "HTTP mask" behaves:
@@ -140,8 +141,8 @@ type ProtocolConfig struct {
 	HTTPMaskMultiplex string
 }
 
-// Validate 验证配置的有效性
-// 返回第一个发现的错误，如果配置有效则返回 nil
+// Validate checks the configuration for correctness.
+// Returns the first error found, or nil if the configuration is valid.
 func (c *ProtocolConfig) Validate() error {
 	if c.Table == nil && len(c.Tables) == 0 {
 		return fmt.Errorf("Table cannot be nil (or provide Tables)")
@@ -158,7 +159,7 @@ func (c *ProtocolConfig) Validate() error {
 
 	switch c.AEADMethod {
 	case "aes-128-gcm", "chacha20-poly1305", "none":
-		// 有效值
+		// Valid values
 	default:
 		return fmt.Errorf("invalid AEADMethod: %s, must be one of: aes-128-gcm, chacha20-poly1305, none", c.AEADMethod)
 	}
@@ -240,8 +241,8 @@ func (c *ProtocolConfig) ValidateClient() error {
 	return nil
 }
 
-// DefaultConfig 返回一个安全的默认配置
-// 注意：返回的配置仍需设置 Key、Table、ServerAddress (客户端) 或 TargetAddress (服务端)
+// DefaultConfig returns a safe default configuration.
+// Note: the returned config still requires Key, Table, ServerAddress (client) or TargetAddress (server).
 func DefaultConfig() *ProtocolConfig {
 	return &ProtocolConfig{
 		AEADMethod:              "chacha20-poly1305",

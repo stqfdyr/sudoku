@@ -24,27 +24,28 @@ import (
 	"net"
 )
 
-// HandshakeError 包装了握手过程中的错误
-// 如果发生此错误，调用者可以通过 RawConn、HTTPHeaderData 和 ReadData 进行回落处理
+// HandshakeError wraps errors that occur during the handshake process.
+// When this error is returned, the caller may perform fallback handling
+// using RawConn, HTTPHeaderData, and ReadData.
 //
-// 字段说明：
-//   - Err: 原始错误，说明握手失败的具体原因
-//   - RawConn: 原始 TCP 连接，可用于回落处理
-//   - HTTPHeaderData: HTTP 伪装层读取的头部字节（在 ConsumeHeader 阶段收集）
-//   - ReadData: Sudoku 层读取并记录的字节（在 Sudoku 解码阶段收集）
+// Fields:
+//   - Err: Original error describing why the handshake failed.
+//   - RawConn: The raw TCP connection, available for fallback.
+//   - HTTPHeaderData: Header bytes read during the HTTP mask phase (ConsumeHeader stage).
+//   - ReadData: Bytes read and recorded during the Sudoku decoding phase.
 //
-// 回落处理时的数据重放顺序：
-//  1. 首先写入 HTTPHeaderData（如果非空）
-//  2. 然后写入 ReadData（如果非空）
-//  3. 最后转发 RawConn 中的剩余数据
+// Data replay order for fallback:
+//  1. Write HTTPHeaderData first (if non-empty)
+//  2. Then write ReadData (if non-empty)
+//  3. Finally forward remaining data from RawConn
 //
-// 示例用法：
+// Example usage:
 //
 //	conn, target, err := apis.ServerHandshake(rawConn, cfg)
 //	if err != nil {
 //	    var hsErr *apis.HandshakeError
 //	    if errors.As(err, &hsErr) {
-//	        // 可以进行回落处理
+//	        // Perform fallback handling
 //	        fallbackConn, _ := net.Dial("tcp", fallbackAddr)
 //	        fallbackConn.Write(hsErr.HTTPHeaderData)
 //	        fallbackConn.Write(hsErr.ReadData)
@@ -56,8 +57,8 @@ import (
 type HandshakeError struct {
 	Err            error
 	RawConn        net.Conn
-	HTTPHeaderData []byte // HTTP 伪装层头部数据
-	ReadData       []byte // Sudoku 层已读取的数据
+	HTTPHeaderData []byte // Header data from the HTTP mask layer
+	ReadData       []byte // Data already read by the Sudoku layer
 }
 
 func (e *HandshakeError) Error() string {

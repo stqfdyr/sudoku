@@ -213,12 +213,12 @@ func WriteRandomRequestHeaderWithPathRoot(w io.Writer, host string, pathRoot str
 	return err
 }
 
-// ConsumeHeader 读取并消耗 HTTP 头部，返回消耗的数据和剩余的 reader 数据
-// 如果不是 POST 请求或格式严重错误，返回 error
+// ConsumeHeader reads and consumes the HTTP header, returning the consumed bytes.
+// Returns an error if the request is not a recognized HTTP method or is badly malformed.
 func ConsumeHeader(r *bufio.Reader) ([]byte, error) {
 	var consumed bytes.Buffer
 
-	// 1. 读取请求行
+	// 1. Read the request line
 	// Use ReadSlice to avoid allocation if line fits in buffer
 	line, err := r.ReadSlice('\n')
 	if err != nil {
@@ -240,7 +240,7 @@ func ConsumeHeader(r *bufio.Reader) ([]byte, error) {
 		return consumed.Bytes(), fmt.Errorf("invalid method or garbage: %s", strings.TrimSpace(string(line)))
 	}
 
-	// 2. 循环读取头部，直到遇到空行
+	// 2. Read headers until an empty line is encountered
 	for {
 		line, err = r.ReadSlice('\n')
 		if err != nil {
