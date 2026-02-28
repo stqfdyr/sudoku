@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -115,11 +116,13 @@ func RunClient(cfg *config.Config, tables []*sudoku.Table) {
 
 	// Graceful shutdown on SIGINT / SIGTERM.
 	sigCh := make(chan os.Signal, 1)
+	stopCh := make(chan struct{})
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		logx.Infof("Client", "Shutting down...")
-		l.Close()
+		close(stopCh)
+		_ = l.Close()
 	}()
 
 	var primaryTable *sudoku.Table
@@ -129,8 +132,11 @@ func RunClient(cfg *config.Config, tables []*sudoku.Table) {
 	for {
 		c, err := l.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
 			select {
-			case <-sigCh:
+			case <-stopCh:
 				return
 			default:
 				continue
