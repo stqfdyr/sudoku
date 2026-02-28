@@ -14,6 +14,7 @@ import (
 	"github.com/saba-futai/sudoku/internal/config"
 	"github.com/saba-futai/sudoku/internal/protocol"
 	"github.com/saba-futai/sudoku/internal/tunnel"
+	"github.com/saba-futai/sudoku/pkg/connutil"
 	"github.com/saba-futai/sudoku/pkg/geodata"
 	"github.com/saba-futai/sudoku/pkg/logx"
 	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
@@ -92,7 +93,7 @@ func handleSocks5UDPAssociate(ctrl net.Conn, cfg *config.Config, geoMgr *geodata
 
 	replyIP := selectUDPAssociateReplyIP(localIP, remoteIP)
 	reply := buildUDPAssociateReply(replyIP, udpConn.LocalAddr().(*net.UDPAddr).Port, localIP, remoteIP)
-	if _, err := ctrl.Write(reply); err != nil {
+	if err := connutil.WriteFull(ctrl, reply); err != nil {
 		_ = udpConn.Close()
 		_ = uotConn.Close()
 		return

@@ -847,13 +847,13 @@ func (s *TunnelServer) streamPush(rawConn net.Conn, token string, body io.Reader
 		return HandleDone, nil, nil
 	}
 
-	if len(payload) > 0 {
-		_ = sess.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		_, werr := sess.conn.Write(payload)
-		_ = sess.conn.SetWriteDeadline(time.Time{})
-		if werr != nil {
-			s.sessionClose(token)
-			_ = writeSimpleHTTPResponse(rawConn, http.StatusGone, "gone")
+		if len(payload) > 0 {
+			_ = sess.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			werr := connutil.WriteFull(sess.conn, payload)
+			_ = sess.conn.SetWriteDeadline(time.Time{})
+			if werr != nil {
+				s.sessionClose(token)
+				_ = writeSimpleHTTPResponse(rawConn, http.StatusGone, "gone")
 			_ = rawConn.Close()
 			return HandleDone, nil, nil
 		}
@@ -866,26 +866,24 @@ func (s *TunnelServer) streamPush(rawConn net.Conn, token string, body io.Reader
 
 func (s *TunnelServer) streamPull(rawConn net.Conn, token string) (HandleResult, net.Conn, error) {
 	return s.sessionPull(rawConn, token, false, func(w io.Writer, p []byte) error {
-		_, err := w.Write(p)
-		return err
+		return connutil.WriteFull(w, p)
 	})
 }
 
 func (s *TunnelServer) pollPull(rawConn net.Conn, token string) (HandleResult, net.Conn, error) {
 	enc := make([]byte, base64.StdEncoding.EncodedLen(32*1024))
-	return s.sessionPull(rawConn, token, true, func(w io.Writer, p []byte) error {
+		return s.sessionPull(rawConn, token, true, func(w io.Writer, p []byte) error {
 		if cap(enc) < base64.StdEncoding.EncodedLen(len(p)) {
 			enc = make([]byte, base64.StdEncoding.EncodedLen(len(p)))
 		}
-		line := enc[:base64.StdEncoding.EncodedLen(len(p))]
-		base64.StdEncoding.Encode(line, p)
-		if _, err := w.Write(line); err != nil {
-			return err
-		}
-		_, err := w.Write([]byte{'\n'})
-		return err
-	})
-}
+			line := enc[:base64.StdEncoding.EncodedLen(len(p))]
+			base64.StdEncoding.Encode(line, p)
+			if err := connutil.WriteFull(w, line); err != nil {
+				return err
+			}
+			return connutil.WriteFull(w, []byte{'\n'})
+		})
+	}
 
 func (s *TunnelServer) sessionPull(rawConn net.Conn, token string, keepalive bool, writePayload func(io.Writer, []byte) error) (HandleResult, net.Conn, error) {
 	sess, ok := s.sessionGet(token)

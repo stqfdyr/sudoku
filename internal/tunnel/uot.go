@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/saba-futai/sudoku/internal/protocol"
+	"github.com/saba-futai/sudoku/pkg/connutil"
 )
 
 const (
@@ -35,18 +36,16 @@ func WriteUoTDatagram(w io.Writer, addr string, payload []byte) error {
 		return fmt.Errorf("payload too large: %d", len(payload))
 	}
 
-	header := make([]byte, 4)
+	var header [4]byte
 	binary.BigEndian.PutUint16(header[:2], uint16(addrBuf.Len()))
 	binary.BigEndian.PutUint16(header[2:], uint16(len(payload)))
-
-	if _, err := w.Write(header); err != nil {
+	if err := connutil.WriteFull(w, header[:]); err != nil {
 		return err
 	}
-	if _, err := w.Write(addrBuf.Bytes()); err != nil {
+	if err := connutil.WriteFull(w, addrBuf.Bytes()); err != nil {
 		return err
 	}
-	_, err := w.Write(payload)
-	return err
+	return connutil.WriteFull(w, payload)
 }
 
 // ReadUoTDatagram parses a single UDP datagram frame from the reliable tunnel.
