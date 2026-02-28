@@ -3,9 +3,8 @@ package tunnel
 import (
 	"bufio"
 	"bytes"
-	"encoding/binary"
-	"encoding/hex"
-	"errors"
+	"crypto/ecdh"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"net"
@@ -147,14 +146,9 @@ func HandshakeAndUpgrade(rawConn net.Conn, cfg *config.Config, table *sudoku.Tab
 // UserHash is a hex-encoded 8-byte value derived from the client's private key (when the client uses one):
 // sha256(privateKey)[:8]. For clients without a private key, it is derived from the handshake nonce bytes.
 type HandshakeMeta struct {
+	// UserHash is a hex-encoded 8-byte client identifier.
+	// When the client has a private key, it is sha256(privateKey)[:8].
 	UserHash string
-}
-
-func userHashFromHandshake(handshakeBuf []byte) string {
-	if len(handshakeBuf) < 16 {
-		return ""
-	}
-	return hex.EncodeToString(handshakeBuf[8:16])
 }
 
 type recordedConn struct {
@@ -225,115 +219,28 @@ func (c *readOnlyConn) SetWriteDeadline(time.Time) error { return nil }
 func probeHandshakeBytes(probe []byte, cfg *config.Config, table *sudoku.Table) error {
 	rc := &readOnlyConn{Reader: bytes.NewReader(probe)}
 	_, obfsConn := buildObfsConnForServer(rc, table, cfg, false)
-	cConn, err := crypto.NewAEADConn(obfsConn, cfg.Key, cfg.AEAD)
+	pskC2S, pskS2C := derivePSKDirectionalBases(cfg.Key)
+	// Server side: recv is client->server, send is server->client.
+	cConn, err := crypto.NewRecordConn(obfsConn, cfg.AEAD, pskS2C, pskC2S)
 	if err != nil {
 		return err
 	}
 
-	handshakeBuf := make([]byte, 16)
-	if _, err := io.ReadFull(cConn, handshakeBuf); err != nil {
+	msg, err := ReadKIPMessage(cConn)
+	if err != nil {
 		return err
 	}
-	ts := int64(binary.BigEndian.Uint64(handshakeBuf[:8]))
-	if connutil.AbsInt64(time.Now().Unix()-ts) > 60 {
+	if msg.Type != KIPTypeClientHello {
+		return fmt.Errorf("unexpected handshake message: %d", msg.Type)
+	}
+	ch, err := DecodeKIPClientHelloPayload(msg.Payload)
+	if err != nil {
+		return err
+	}
+	if connutil.AbsInt64(time.Now().Unix()-ch.Timestamp.Unix()) > int64(kipHandshakeSkew.Seconds()) {
 		return fmt.Errorf("time skew/replay")
 	}
-
-	modeBuf := make([]byte, 1)
-	if _, err := io.ReadFull(cConn, modeBuf); err != nil {
-		return err
-	}
-	if modeBuf[0] != downlinkModeByte(cfg) {
-		return fmt.Errorf("downlink mode mismatch: client=%d server=%d", modeBuf[0], downlinkModeByte(cfg))
-	}
 	return nil
-}
-
-func drainBuffered(r *bufio.Reader) ([]byte, error) {
-	n := r.Buffered()
-	if n <= 0 {
-		return nil, nil
-	}
-	out := make([]byte, n)
-	_, err := io.ReadFull(r, out)
-	return out, err
-}
-
-func selectTableByProbe(r *bufio.Reader, cfg *config.Config, tables []*sudoku.Table) (*sudoku.Table, []byte, error) {
-	const (
-		maxProbeBytes = 64 * 1024
-		readChunk     = 4 * 1024
-	)
-	if len(tables) == 0 {
-		return nil, nil, fmt.Errorf("no table candidates")
-	}
-	if len(tables) > 255 {
-		return nil, nil, fmt.Errorf("too many table candidates: %d", len(tables))
-	}
-
-	// Copy so we can prune candidates without mutating the caller slice.
-	candidates := make([]*sudoku.Table, 0, len(tables))
-	for i := range tables {
-		if tables[i] != nil {
-			candidates = append(candidates, tables[i])
-		}
-	}
-	if len(candidates) == 0 {
-		return nil, nil, fmt.Errorf("no table candidates")
-	}
-
-	probe, err := drainBuffered(r)
-	if err != nil {
-		return nil, nil, fmt.Errorf("drain buffered bytes failed: %w", err)
-	}
-
-	tmp := make([]byte, readChunk)
-	for {
-		if len(candidates) == 1 {
-			tail, err := drainBuffered(r)
-			if err != nil {
-				return nil, nil, fmt.Errorf("drain buffered bytes failed: %w", err)
-			}
-			probe = append(probe, tail...)
-			return candidates[0], probe, nil
-		}
-
-		needMore := false
-		nextCandidates := candidates[:0]
-		for _, table := range candidates {
-			err := probeHandshakeBytes(probe, cfg, table)
-			if err == nil {
-				tail, err := drainBuffered(r)
-				if err != nil {
-					return nil, nil, fmt.Errorf("drain buffered bytes failed: %w", err)
-				}
-				probe = append(probe, tail...)
-				return table, probe, nil
-			}
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				needMore = true
-				nextCandidates = append(nextCandidates, table)
-				continue
-			}
-			// Definitive mismatch: drop this table to avoid O(n*m) probing as the probe grows.
-		}
-		candidates = nextCandidates
-
-		if len(candidates) == 0 || !needMore {
-			return nil, probe, fmt.Errorf("handshake table selection failed")
-		}
-		if len(probe) >= maxProbeBytes {
-			return nil, probe, fmt.Errorf("handshake probe exceeded %d bytes", maxProbeBytes)
-		}
-
-		n, err := r.Read(tmp)
-		if n > 0 {
-			probe = append(probe, tmp[:n]...)
-		}
-		if err != nil {
-			return nil, probe, fmt.Errorf("handshake probe read failed: %w", err)
-		}
-	}
 }
 
 // HandshakeAndUpgradeWithTables performs the handshake by probing one of multiple tables.
@@ -368,7 +275,9 @@ func HandshakeAndUpgradeWithTablesMeta(rawConn net.Conn, cfg *config.Config, tab
 		return nil, nil, fmt.Errorf("enable_pure_downlink=false requires AEAD")
 	}
 
-	selectedTable, preRead, err := selectTableByProbe(bufReader, cfg, tables)
+	selectedTable, preRead, err := SelectTableByProbe(bufReader, tables, func(probe []byte, table *sudoku.Table) error {
+		return probeHandshakeBytes(probe, cfg, table)
+	})
 	if err != nil {
 		combined := make([]byte, 0, len(httpHeaderData)+len(preRead))
 		combined = append(combined, httpHeaderData...)
@@ -380,32 +289,60 @@ func HandshakeAndUpgradeWithTablesMeta(rawConn net.Conn, cfg *config.Config, tab
 	sConn, obfsConn := buildObfsConnForServer(baseConn, selectedTable, cfg, true)
 
 	// 2. Crypto Layer
-	cConn, err := crypto.NewAEADConn(obfsConn, cfg.Key, cfg.AEAD)
+	pskC2S, pskS2C := derivePSKDirectionalBases(cfg.Key)
+	// Server side: recv is client->server, send is server->client.
+	cConn, err := crypto.NewRecordConn(obfsConn, cfg.AEAD, pskS2C, pskC2S)
 	if err != nil {
 		return nil, nil, fmt.Errorf("crypto setup failed: %w", err)
 	}
 
 	// 3. Handshake
-	handshakeBuf := make([]byte, 16)
 	_ = rawConn.SetReadDeadline(time.Now().Add(HandshakeTimeout))
-	_, err = io.ReadFull(cConn, handshakeBuf)
+	msg, err := ReadKIPMessage(cConn)
 	if err != nil {
 		return nil, nil, &SuspiciousError{Err: fmt.Errorf("handshake read failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
 	}
-
-	ts := int64(binary.BigEndian.Uint64(handshakeBuf[:8]))
-	if connutil.AbsInt64(time.Now().Unix()-ts) > 60 {
+	if msg.Type != KIPTypeClientHello {
+		return nil, nil, &SuspiciousError{Err: fmt.Errorf("unexpected handshake message: %d", msg.Type), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+	}
+	ch, err := DecodeKIPClientHelloPayload(msg.Payload)
+	if err != nil {
+		return nil, nil, &SuspiciousError{Err: fmt.Errorf("decode client hello failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+	}
+	if connutil.AbsInt64(time.Now().Unix()-ch.Timestamp.Unix()) > int64(kipHandshakeSkew.Seconds()) {
 		return nil, nil, &SuspiciousError{Err: fmt.Errorf("time skew/replay"), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
 	}
-	meta := &HandshakeMeta{UserHash: userHashFromHandshake(handshakeBuf)}
-
-	// 4. Downlink mode negotiation
-	modeBuf := make([]byte, 1)
-	if _, err := io.ReadFull(cConn, modeBuf); err != nil {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("read downlink mode failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+	meta := &HandshakeMeta{UserHash: kipUserHashHex(ch.UserHash)}
+	if !globalHandshakeReplay.allow(meta.UserHash, ch.Nonce, time.Now()) {
+		return nil, nil, &SuspiciousError{Err: fmt.Errorf("replay"), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
 	}
-	if modeBuf[0] != downlinkModeByte(cfg) {
-		return nil, nil, &SuspiciousError{Err: fmt.Errorf("downlink mode mismatch: client=%d server=%d", modeBuf[0], downlinkModeByte(cfg)), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+
+	curve := ecdh.X25519()
+	serverEphemeral, err := curve.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, &SuspiciousError{Err: fmt.Errorf("ecdh generate failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+	}
+	shared, err := x25519SharedSecret(serverEphemeral, ch.ClientPub[:])
+	if err != nil {
+		return nil, nil, &SuspiciousError{Err: fmt.Errorf("ecdh failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+	}
+	sessC2S, sessS2C, err := deriveSessionDirectionalBases(cfg.Key, shared, ch.Nonce)
+	if err != nil {
+		return nil, nil, &SuspiciousError{Err: fmt.Errorf("derive session keys failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+	}
+
+	var serverPub [kipHelloPubSize]byte
+	copy(serverPub[:], serverEphemeral.PublicKey().Bytes())
+	sh := &KIPServerHello{
+		Nonce:         ch.Nonce,
+		ServerPub:     serverPub,
+		SelectedFeats: ch.Features & KIPFeatAll,
+	}
+	if err := WriteKIPMessage(cConn, KIPTypeServerHello, sh.EncodePayload()); err != nil {
+		return nil, nil, &SuspiciousError{Err: fmt.Errorf("write server hello failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+	}
+	if err := cConn.Rekey(sessS2C, sessC2S); err != nil {
+		return nil, nil, &SuspiciousError{Err: fmt.Errorf("rekey failed: %w", err), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
 	}
 
 	sConn.StopRecording()

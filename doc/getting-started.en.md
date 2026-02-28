@@ -102,7 +102,7 @@ To run through Cloudflare (or other CDN/reverse-proxy), use real HTTP tunnel mod
 - Export a link from your config to share:
   - client config: `./sudoku -c client.json -export-link`
   - server config: `./sudoku -c server.json -export-link -public-host host[:port]`
-- Tip: short links support `custom_table`, `custom_tables` rotation, and CDN-related HTTP mask options; keep `custom_table` if you need to support older clients.
+- Tip: short links support `custom_table`, `custom_tables` rotation, and CDN-related HTTP mask options.
 
 ## 9) Quick troubleshooting
 - Port in use: change `local_port` or free the port.

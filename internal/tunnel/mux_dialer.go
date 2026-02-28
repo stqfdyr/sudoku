@@ -83,7 +83,7 @@ func (d *MuxDialer) getOrCreateSession() (*muxSession, error) {
 		if d.Config.HTTPMask.Disable {
 			return nil, fmt.Errorf("mux requires httpmask.disable=false")
 		}
-		return nil, fmt.Errorf("mux requires httpmask.mode=stream/poll/auto (got %q)", d.Config.HTTPMask.Mode)
+		return nil, fmt.Errorf("mux requires httpmask.mode=stream/poll/auto/ws (got %q)", d.Config.HTTPMask.Mode)
 	}
 	if d.Config.HTTPMask.Multiplex != "on" {
 		d.mu.Lock()
@@ -102,13 +102,13 @@ func (d *MuxDialer) getOrCreateSession() (*muxSession, error) {
 		return nil, err
 	}
 
-	if err := WriteMuxPreface(baseConn); err != nil {
+	if err := WriteKIPMessage(baseConn, KIPTypeStartMux, nil); err != nil {
 		_ = baseConn.Close()
 		d.mu.Lock()
 		d.creating = false
 		d.cond.Broadcast()
 		d.mu.Unlock()
-		return nil, fmt.Errorf("mux preface failed: %w", err)
+		return nil, fmt.Errorf("mux start failed: %w", err)
 	}
 
 	d.mu.Lock()

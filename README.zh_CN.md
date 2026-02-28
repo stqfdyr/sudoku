@@ -115,17 +115,6 @@ go build -o sudoku cmd/sudoku-tunnel/main.go
 - `"httpmask": { "multiplex": "on" }`（单 tunnel 多目标：在同一条 HTTPMask 隧道内复用多条目标连接，进一步减少后续连接 RTT）
 - 客户端 `server_address` 可填写域名（如 `"example.com:443"`）；如需使用 HTTPS，请显式设置 `"httpmask": { "tls": true }`（不再按端口自动推断）。
 
-兼容性说明：仍兼容旧版顶层字段 `disable_http_mask` / `http_mask_*` / `path_root`，但建议迁移到新的 `httpmask` 对象。
-
-### 链式代理（多跳）
-客户端可通过多个 Sudoku 服务端级联转发（嵌套隧道）：
-```json
-{
-  "server_address": "entry.example.com:443",
-  "chain": { "hops": ["mid.example.com:443", "exit.example.com:443"] }
-}
-```
-
 ### 反向代理（将客户端服务暴露到服务端：HTTP + 纯 TCP）
 让 NAT 后的客户端把本地服务通过隧道暴露给服务端。
 

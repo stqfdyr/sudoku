@@ -16,13 +16,10 @@ type MuxClient struct {
 	sess *muxSession
 }
 
-// NewMuxClient writes the mux preface and starts the client-side mux session.
+// NewMuxClient starts the mux session on an already-negotiated mux tunnel connection.
 func NewMuxClient(conn net.Conn) (*MuxClient, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("nil conn")
-	}
-	if err := WriteMuxPreface(conn); err != nil {
-		return nil, err
 	}
 	return &MuxClient{sess: newMuxSession(conn, nil)}, nil
 }

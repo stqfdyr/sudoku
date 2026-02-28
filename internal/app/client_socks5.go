@@ -77,12 +77,7 @@ func handleSocks5UDPAssociate(ctrl net.Conn, cfg *config.Config, geoMgr *geodata
 	localIP := ipFromNetAddr(ctrl.LocalAddr())
 	remoteIP := ipFromNetAddr(ctrl.RemoteAddr())
 
-	udpNet, udpBindIP := "udp", net.IPv6unspecified
-	udpConn, err := net.ListenUDP(udpNet, &net.UDPAddr{IP: udpBindIP, Port: 0})
-	if err != nil {
-		udpNet, udpBindIP = udpNetworkAndBindIP(localIP, remoteIP)
-		udpConn, err = net.ListenUDP(udpNet, &net.UDPAddr{IP: udpBindIP, Port: 0})
-	}
+	udpConn, udpNet, err := listenUDPAssociate(localIP, remoteIP)
 	if err != nil {
 		writeSocks5Reply(ctrl, 0x01)
 		return
@@ -174,10 +169,55 @@ func isIPv6Only(localIP net.IP, remoteIP net.IP) bool {
 }
 
 func udpNetworkAndBindIP(localIP net.IP, remoteIP net.IP) (string, net.IP) {
+	localIP = normalizeIP(localIP)
+	remoteIP = normalizeIP(remoteIP)
+
+	// Best-effort family match with the TCP control peer.
+	if remoteIP != nil {
+		if remoteIP.To4() != nil {
+			return "udp4", net.IPv4zero
+		}
+		return "udp6", net.IPv6unspecified
+	}
+
+	// Unknown peer family: try dual-stack first when possible.
 	if isIPv6Only(localIP, remoteIP) {
 		return "udp6", net.IPv6unspecified
 	}
-	return "udp4", net.IPv4zero
+	return "udp", nil
+}
+
+func listenUDPAssociate(localIP net.IP, remoteIP net.IP) (*net.UDPConn, string, error) {
+	// Prefer a dual-stack socket when possible (and safe), then fall back to a family-specific one.
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: nil, Port: 0})
+	if err == nil && udpConn != nil {
+		la, _ := udpConn.LocalAddr().(*net.UDPAddr)
+		laIP := net.IP(nil)
+		if la != nil {
+			laIP = normalizeIP(la.IP)
+		}
+		peerIP := normalizeIP(remoteIP)
+
+		// Avoid surprising family mismatch on platforms where "udp" may bind IPv6-only sockets by default.
+		if peerIP != nil && laIP != nil {
+			if peerIP.To4() != nil && laIP.To4() == nil {
+				_ = udpConn.Close()
+				udpConn = nil
+			}
+			if peerIP.To4() == nil && laIP.To4() != nil {
+				_ = udpConn.Close()
+				udpConn = nil
+			}
+		}
+
+		if udpConn != nil {
+			return udpConn, "udp", nil
+		}
+	}
+
+	udpNet, udpBindIP := udpNetworkAndBindIP(localIP, remoteIP)
+	c, err := net.ListenUDP(udpNet, &net.UDPAddr{IP: udpBindIP, Port: 0})
+	return c, udpNet, err
 }
 
 func selectUDPAssociateReplyIP(localIP net.IP, remoteIP net.IP) net.IP {

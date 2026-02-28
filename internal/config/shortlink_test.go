@@ -94,8 +94,8 @@ func TestShortLinkRoundTrip_CustomTablesAndCDN(t *testing.T) {
 			t.Fatalf("custom tables[%d] mismatch, got %s", i, decoded.CustomTables[i])
 		}
 	}
-	if decoded.CustomTable != cfg.CustomTables[0] {
-		t.Fatalf("custom table fallback mismatch, got %s", decoded.CustomTable)
+	if decoded.CustomTable != "" {
+		t.Fatalf("custom table mismatch, got %s", decoded.CustomTable)
 	}
 	if decoded.HTTPMask.Mode != "auto" {
 		t.Fatalf("http mask mode mismatch, got %s", decoded.HTTPMask.Mode)

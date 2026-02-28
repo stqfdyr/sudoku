@@ -151,8 +151,7 @@ func (sc *Conn) Write(p []byte) (n int, err error) {
 		out = append(out, pads[sc.rng.Intn(padLen)])
 	}
 
-	_, err = sc.Conn.Write(out)
-	return len(p), err
+	return len(p), connutil.WriteFull(sc.Conn, out)
 }
 
 func (sc *Conn) Read(p []byte) (n int, err error) {

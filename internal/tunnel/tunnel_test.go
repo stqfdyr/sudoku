@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -68,10 +69,20 @@ func TestSudokuTunnel_Standard(t *testing.T) {
 					return
 				}
 
-				// Read Target Address (Standard Mode)
-				target, _, _, err := protocol.ReadAddress(sConn)
+				msg, err := ReadKIPMessage(sConn)
 				if err != nil {
-					t.Errorf("Server read address failed: %v", err)
+					t.Errorf("Server read open failed: %v", err)
+					return
+				}
+				if msg.Type != KIPTypeOpenTCP {
+					t.Errorf("Unexpected first message: %d", msg.Type)
+					return
+				}
+
+				// Read Target Address (Standard Mode)
+				target, _, _, err := protocol.ReadAddress(bytes.NewReader(msg.Payload))
+				if err != nil {
+					t.Errorf("Server decode address failed: %v", err)
 					return
 				}
 				if target != "example.com:80" {

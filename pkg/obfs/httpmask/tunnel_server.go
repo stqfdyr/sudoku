@@ -140,6 +140,9 @@ func (s *TunnelServer) HandleConn(rawConn net.Conn) (HandleResult, net.Conn, err
 	replayPrefix := buildHTTPReplayPrefix(headerBytes, buffered)
 
 	tunnelHeader := TunnelMode(strings.ToLower(strings.TrimSpace(req.headers["x-sudoku-tunnel"])))
+	if looksLikeWebSocketUpgrade(req.headers) {
+		tunnelHeader = TunnelModeWS
+	}
 	if tunnelHeader == "" {
 		// Some CDNs / forward proxies may strip unknown headers. When AuthKey is enabled, we can
 		// safely infer the intended tunnel mode by verifying the Authorization token against
@@ -166,6 +169,11 @@ func (s *TunnelServer) HandleConn(rawConn net.Conn) (HandleResult, net.Conn, err
 			return rejectOr404(replayPrefix)
 		}
 		return s.handlePoll(rawConn, req, headerBytes, buffered)
+	case TunnelModeWS:
+		if s.mode != TunnelModeWS && s.mode != TunnelModeAuto {
+			return rejectOr404(replayPrefix)
+		}
+		return s.handleWS(rawConn, req, headerBytes, buffered)
 	default:
 		return rejectOr404(replayPrefix)
 	}

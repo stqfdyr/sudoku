@@ -20,28 +20,22 @@ func TestMuxSession_Echo(t *testing.T) {
 	go func() {
 		defer close(done)
 
-		// Simulate server-side first-byte dispatch (magic already consumed by caller).
-		var magic [1]byte
-		if _, err := io.ReadFull(serverConn, magic[:]); err != nil {
+		msg, err := ReadKIPMessage(serverConn)
+		if err != nil {
 			return
 		}
-		if magic[0] != MuxMagicByte {
+		if msg.Type != KIPTypeStartMux {
 			return
 		}
-		var ver [1]byte
-		if _, err := io.ReadFull(serverConn, ver[:]); err != nil {
-			return
-		}
-		if ver[0] != muxVersion {
-			return
-		}
-
 		sess := newMuxSession(serverConn, func(stream *muxStream, _ []byte) {
 			_, _ = io.Copy(stream, stream)
 		})
 		<-sess.closed
 	}()
 
+	if err := WriteKIPMessage(clientConn, KIPTypeStartMux, nil); err != nil {
+		t.Fatalf("start mux: %v", err)
+	}
 	mux, err := NewMuxClient(clientConn)
 	if err != nil {
 		t.Fatalf("NewMuxClient: %v", err)

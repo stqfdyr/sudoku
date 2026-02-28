@@ -129,13 +129,14 @@ WantedBy=multi-user.target
   - `e` AEAD: `chacha20-poly1305` (default) / `aes-128-gcm` / `none`
   - `m` client mixed proxy port (default 1080 if missing)
   - `x` packed downlink (true enables bandwidth-optimized downlink)
-  - `t` custom table pattern (optional, same as `custom_table` in config; kept for backward compatibility)
+  - `t` custom table pattern (optional, same as `custom_table` in config)
   - `ts` custom table patterns rotation (optional, same as `custom_tables` in config)
   - `hd` disable HTTP mask (optional)
-  - `hm` HTTP mask mode: `legacy` / `stream` / `poll` / `auto` (optional)
+  - `hm` HTTP mask mode: `legacy` / `stream` / `poll` / `auto` / `ws` (optional)
   - `ht` force HTTPS in tunnel modes (optional)
   - `hh` HTTP Host/SNI override in tunnel modes (optional)
   - `hx` HTTP mask multiplex: `off` / `auto` / `on` (optional)
+  - `hy` HTTP mask path root prefix (optional)
 - Example: `sudoku://eyJoIjoiZXhhbXBsZS5jb20iLCJwIjo4MDgwLCJrIjoiYWJjZCIsImEiOiJhc2NpaSIsIm0iOjEwODAsIm1wIjoyMDEyM30`
 - Client bootstrap: `./sudoku -link "<link>"` (starts PAC proxy).
 - Export from config: `./sudoku -c client.json -export-link` (or `./sudoku -c server.json -export-link -public-host host[:port]`)
@@ -252,11 +253,12 @@ Sudoku 只有在真实 HTTP 隧道模式下才能过 CDN/代理：`stream` / `po
   - `e` AEAD：`chacha20-poly1305`（默认）/`aes-128-gcm`/`none`
   - `m` 客户端混合代理端口（缺省 1080）
   - `x` 带宽优化下行标记（true=启用）
-  - `t` 自定义表型（可选，与 `custom_table` 一致；为兼容旧版保留）
+  - `t` 自定义表型（可选，与 `custom_table` 一致）
   - `ts` 多表轮换（可选，与 `custom_tables` 一致）
   - `hd` 禁用 HTTP mask（可选）
-  - `hm` HTTP mask 模式：`legacy` / `stream` / `poll` / `auto`（可选）
+  - `hm` HTTP mask 模式：`legacy` / `stream` / `poll` / `auto` / `ws`（可选）
   - `ht` 强制 HTTPS（可选）
   - `hh` tunnel 模式下的 Host/SNI 覆盖（可选）
   - `hx` HTTP mask 多路复用：`off` / `auto` / `on`（可选）
+  - `hy` HTTP mask path root 前缀（可选）
 - 启动：`./sudoku -link "<短链>"`；导出：`./sudoku -c client.json -export-link [-public-host]`

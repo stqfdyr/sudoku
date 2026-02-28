@@ -106,7 +106,7 @@ go build -o sudoku ./cmd/sudoku-tunnel
   - 客户端配置：`./sudoku -c client.json -export-link`
   - 服务端配置：`./sudoku -c server.json -export-link -public-host 域名[:端口]`
 短链可让对方免编辑配置，直接运行即可。
-提示：短链接支持 `custom_table` 以及 `custom_tables`（多表轮换），并可携带 CDN 相关的 HTTP mask 选项；如需兼容旧版本客户端，请至少保留 `custom_table`。
+提示：短链接支持 `custom_table` 以及 `custom_tables`（多表轮换），并可携带 CDN 相关的 HTTP mask 选项。
 
 ## 9. 常见问题速查
 - **端口占用**：更换 `local_port` 或释放冲突程序。

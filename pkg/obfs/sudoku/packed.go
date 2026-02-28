@@ -205,9 +205,8 @@ func (pc *PackedConn) Write(p []byte) (int, error) {
 
 	// Send data
 	if len(out) > 0 {
-		_, err := pc.Conn.Write(out)
 		pc.writeBuf = out[:0]
-		return len(p), err
+		return len(p), connutil.WriteFull(pc.Conn, out)
 	}
 	pc.writeBuf = out[:0]
 	return len(p), nil
@@ -232,9 +231,8 @@ func (pc *PackedConn) Flush() error {
 	out = pc.maybeAddPadding(out)
 
 	if len(out) > 0 {
-		_, err := pc.Conn.Write(out)
 		pc.writeBuf = out[:0]
-		return err
+		return connutil.WriteFull(pc.Conn, out)
 	}
 	return nil
 }

@@ -100,7 +100,7 @@ Add `"custom_table": "xpxvvpvv"` (two `x`, two `p`, four `v`, 420 permutations a
 
 For table rotation, use `"custom_tables": ["xpxvvpvv", "vxpvxvvp"]`. When `custom_tables` is non-empty it overrides `custom_table`; the client picks one table per connection and the server probes the handshake to detect it (no extra plaintext negotiation field).
 
-Note: `sudoku://` short links support `custom_tables` (field `ts`, with `t` as a single-table fallback) and CDN-related HTTP mask options (`hm`/`ht`/`hh`/`hx`). Older links remain compatible.
+Note: `sudoku://` short links support `custom_table` (`t`), `custom_tables` rotation (`ts`), and CDN-related HTTP mask options (`hm`/`ht`/`hh`/`hx`/`hy`).
 
 ### Client Configuration
 
@@ -111,17 +111,6 @@ To run behind a CDN/proxy (e.g., Cloudflare orange-cloud), set:
 - `"httpmask": { "multiplex": "auto" }` (reuse underlying HTTP connections across multiple tunnel dials; HTTP/2 can multiplex multiple tunnels on one connection)
 - `"httpmask": { "multiplex": "on" }` (single tunnel, multi-target mux inside one HTTPMask tunnel; reduces per-connection RTT further)
 - client-side `server_address` can be a domain (e.g., `"example.com:443"`); set `"httpmask": { "tls": true }` to use HTTPS (no port-based inference).
-
-Compatibility note: legacy top-level keys `disable_http_mask` / `http_mask_*` / `path_root` are still accepted, but the new `httpmask` object is recommended.
-
-### Chain Proxy (Multi-hop)
-Client can connect via multiple Sudoku servers (nested tunnels):
-```json
-{
-  "server_address": "entry.example.com:443",
-  "chain": { "hops": ["mid.example.com:443", "exit.example.com:443"] }
-}
-```
 
 ### Reverse Proxy (Expose client services: HTTP + raw TCP)
 Expose a client-side service (behind NAT) via a server-side entry.

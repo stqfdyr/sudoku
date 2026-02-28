@@ -83,7 +83,7 @@ func runSetupWizardPrompt(defaultServerPath, publicHost string) (wizardInput, er
 
 	disableHTTPMask := strings.ToLower(strings.TrimSpace(promptString(reader, "Disable HTTP mask? (yes/no)", "no", "no")))
 	httpMaskDisabled := disableHTTPMask == "yes" || disableHTTPMask == "y"
-	httpMaskMode := strings.TrimSpace(promptString(reader, "HTTP mask mode (legacy / auto / stream / poll)", "", "legacy"))
+	httpMaskMode := strings.TrimSpace(promptString(reader, "HTTP mask mode (legacy / auto / stream / poll / ws)", "", "legacy"))
 	httpMaskTLS := strings.ToLower(strings.TrimSpace(promptString(reader, "HTTP mask TLS (https)? (yes/no)", "no", "no")))
 	httpMaskTLSEnabled := httpMaskTLS == "yes" || httpMaskTLS == "y"
 	httpMaskHost := strings.TrimSpace(promptString(reader, "HTTP mask Host override (optional)", "", ""))

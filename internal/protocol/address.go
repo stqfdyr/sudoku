@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
+	"strings"
 )
 
 // AddrType 定义
@@ -18,50 +20,56 @@ const (
 // ReadAddress 读取 SOCKS5 格式的目标地址
 // 返回: 完整地址字符串 (host:port), 地址类型, IP(如果是域名则为nil), error
 func ReadAddress(r io.Reader) (string, byte, net.IP, error) {
-	buf := make([]byte, 262) // Max domain length + overhead
-
-	// 1. 读取地址类型
-	if _, err := io.ReadFull(r, buf[:1]); err != nil {
+	var atyp [1]byte
+	if _, err := io.ReadFull(r, atyp[:]); err != nil {
 		return "", 0, nil, err
 	}
-	addrType := buf[0]
+	addrType := atyp[0]
 
 	var host string
 	var ip net.IP
 
 	switch addrType {
 	case AddrTypeIPv4:
-		if _, err := io.ReadFull(r, buf[:4]); err != nil {
+		var b [4]byte
+		if _, err := io.ReadFull(r, b[:]); err != nil {
 			return "", 0, nil, err
 		}
-		ip = net.IP(buf[:4])
+		ip = append(net.IP(nil), b[:]...)
 		host = ip.String()
 	case AddrTypeDomain:
-		if _, err := io.ReadFull(r, buf[:1]); err != nil {
+		var lb [1]byte
+		if _, err := io.ReadFull(r, lb[:]); err != nil {
 			return "", 0, nil, err
 		}
-		domainLen := int(buf[0])
-		if _, err := io.ReadFull(r, buf[:domainLen]); err != nil {
+		domainLen := int(lb[0])
+		if domainLen <= 0 || domainLen > 255 {
+			return "", 0, nil, fmt.Errorf("invalid domain length: %d", domainLen)
+		}
+		domain := make([]byte, domainLen)
+		if _, err := io.ReadFull(r, domain); err != nil {
 			return "", 0, nil, err
 		}
-		host = string(buf[:domainLen])
+		host = string(domain)
 	case AddrTypeIPv6:
-		if _, err := io.ReadFull(r, buf[:16]); err != nil {
+		var b [16]byte
+		if _, err := io.ReadFull(r, b[:]); err != nil {
 			return "", 0, nil, err
 		}
-		ip = net.IP(buf[:16])
-		host = fmt.Sprintf("[%s]", ip.String())
+		ip = append(net.IP(nil), b[:]...)
+		host = ip.String()
 	default:
 		return "", 0, nil, fmt.Errorf("unknown address type: %d", addrType)
 	}
 
 	// 2. 读取端口
-	if _, err := io.ReadFull(r, buf[:2]); err != nil {
+	var pb [2]byte
+	if _, err := io.ReadFull(r, pb[:]); err != nil {
 		return "", 0, nil, err
 	}
-	port := binary.BigEndian.Uint16(buf[:2])
+	port := binary.BigEndian.Uint16(pb[:])
 
-	return fmt.Sprintf("%s:%d", host, port), addrType, ip, nil
+	return net.JoinHostPort(host, strconv.Itoa(int(port))), addrType, ip, nil
 }
 
 // WriteAddress 将地址写入 Writer (SOCKS5 格式)
@@ -71,8 +79,15 @@ func WriteAddress(w io.Writer, rawAddr string) error {
 	if err != nil {
 		return err
 	}
-	portInt, _ := net.LookupPort("tcp", portStr)
+	portInt, err := strconv.Atoi(portStr)
+	if err != nil || portInt < 0 || portInt > 65535 {
+		return fmt.Errorf("invalid port: %q", portStr)
+	}
 
+	if i := strings.IndexByte(host, '%'); i >= 0 {
+		// Zone identifiers are not representable in SOCKS5 IPv6 address encoding.
+		host = host[:i]
+	}
 	ip := net.ParseIP(host)
 
 	// 构建缓冲
@@ -83,8 +98,12 @@ func WriteAddress(w io.Writer, rawAddr string) error {
 			buf = append(buf, AddrTypeIPv4)
 			buf = append(buf, ip4...)
 		} else {
+			ip16 := ip.To16()
+			if ip16 == nil {
+				return fmt.Errorf("invalid ipv6: %q", host)
+			}
 			buf = append(buf, AddrTypeIPv6)
-			buf = append(buf, ip...)
+			buf = append(buf, ip16...)
 		}
 	} else {
 		buf = append(buf, AddrTypeDomain)
@@ -95,9 +114,9 @@ func WriteAddress(w io.Writer, rawAddr string) error {
 		buf = append(buf, []byte(host)...)
 	}
 
-	portBytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(portBytes, uint16(portInt))
-	buf = append(buf, portBytes...)
+	var portBytes [2]byte
+	binary.BigEndian.PutUint16(portBytes[:], uint16(portInt))
+	buf = append(buf, portBytes[:]...)
 
 	_, err = w.Write(buf)
 	return err

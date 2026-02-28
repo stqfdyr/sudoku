@@ -78,18 +78,19 @@ func ensureHostPort(host string, method string) string {
 	}
 
 	port := defaultPortForMethod(method)
-	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-		inner := strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
-		if ip := net.ParseIP(inner); ip != nil {
-			return net.JoinHostPort(ip.String(), port)
-		}
+
+	trimmed := host
+	if strings.HasPrefix(trimmed, "[") {
+		trimmed = strings.TrimPrefix(trimmed, "[")
+	}
+	if strings.HasSuffix(trimmed, "]") {
+		trimmed = strings.TrimSuffix(trimmed, "]")
+	}
+	if ip := net.ParseIP(trimmed); ip != nil {
+		return net.JoinHostPort(ip.String(), port)
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		return net.JoinHostPort(ip.String(), port)
-	}
-	if strings.Contains(host, ":") {
-		// Likely malformed IPv6 literal without brackets; keep as-is and let downstream fail.
-		return host
 	}
 	return net.JoinHostPort(host, port)
 }

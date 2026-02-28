@@ -118,6 +118,14 @@ func (c *MuxClient) getOrCreateMux(ctx context.Context) (*tunnel.MuxClient, erro
 		return nil, err
 	}
 
+	if err := tunnel.WriteKIPMessage(baseConn, tunnel.KIPTypeStartMux, nil); err != nil {
+		_ = baseConn.Close()
+		c.mu.Lock()
+		c.creating = false
+		c.cond.Broadcast()
+		c.mu.Unlock()
+		return nil, fmt.Errorf("start mux tunnel failed: %w", err)
+	}
 	createdMux, err := tunnel.NewMuxClient(baseConn)
 	if err != nil {
 		_ = baseConn.Close()

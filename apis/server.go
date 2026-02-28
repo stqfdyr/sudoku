@@ -22,45 +22,21 @@ package apis
 import (
 	"bufio"
 	"bytes"
-	"encoding/binary"
+	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"time"
 
 	"github.com/saba-futai/sudoku/internal/protocol"
+	"github.com/saba-futai/sudoku/internal/tunnel"
 	"github.com/saba-futai/sudoku/pkg/connutil"
 	"github.com/saba-futai/sudoku/pkg/crypto"
 	"github.com/saba-futai/sudoku/pkg/obfs/httpmask"
 	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
 )
-
-// bufferedConn is an internal wrapper that passes bufio over-read data to subsequent layers.
-// It must implement net.Conn.
-type bufferedConn struct {
-	net.Conn
-	r *bufio.Reader
-}
-
-func (bc *bufferedConn) Read(p []byte) (int, error) {
-	return bc.r.Read(p)
-}
-
-type preBufferedConn struct {
-	net.Conn
-	buf []byte
-}
-
-func (p *preBufferedConn) Read(b []byte) (int, error) {
-	if len(p.buf) > 0 {
-		n := copy(b, p.buf)
-		p.buf = p.buf[n:]
-		return n, nil
-	}
-	return p.Conn.Read(b)
-}
 
 type readOnlyConn struct {
 	*bytes.Reader
@@ -74,103 +50,31 @@ func (c *readOnlyConn) SetDeadline(time.Time) error      { return nil }
 func (c *readOnlyConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *readOnlyConn) SetWriteDeadline(time.Time) error { return nil }
 
-func drainBuffered(r *bufio.Reader) ([]byte, error) {
-	n := r.Buffered()
-	if n <= 0 {
-		return nil, nil
-	}
-	out := make([]byte, n)
-	_, err := io.ReadFull(r, out)
-	return out, err
-}
-
 func probeHandshakeBytes(probe []byte, cfg *ProtocolConfig, table *sudoku.Table) error {
 	rc := &readOnlyConn{Reader: bytes.NewReader(probe)}
 	_, obfsConn := buildServerObfsConn(rc, cfg, table, false)
-	cConn, err := crypto.NewAEADConn(obfsConn, cfg.Key, cfg.AEADMethod)
+	pskC2S, pskS2C := tunnel.DerivePSKDirectionalBases(cfg.Key)
+	// Server side: recv is client->server, send is server->client.
+	cConn, err := crypto.NewRecordConn(obfsConn, cfg.AEADMethod, pskS2C, pskC2S)
 	if err != nil {
 		return err
 	}
 
-	handshakeBuf := make([]byte, 16)
-	if _, err := io.ReadFull(cConn, handshakeBuf); err != nil {
+	msg, err := tunnel.ReadKIPMessage(cConn)
+	if err != nil {
 		return err
 	}
-	ts := int64(binary.BigEndian.Uint64(handshakeBuf[:8]))
-	now := time.Now().Unix()
-	if connutil.AbsInt64(now-ts) > 60 {
-		return fmt.Errorf("timestamp skew/replay detected: server_time=%d client_time=%d", now, ts)
+	if msg.Type != tunnel.KIPTypeClientHello {
+		return fmt.Errorf("unexpected handshake message: %d", msg.Type)
 	}
-
-	modeBuf := []byte{0}
-	if _, err := io.ReadFull(cConn, modeBuf); err != nil {
+	ch, err := tunnel.DecodeKIPClientHelloPayload(msg.Payload)
+	if err != nil {
 		return err
 	}
-	if modeBuf[0] != downlinkMode(cfg) {
-		return fmt.Errorf("downlink mode mismatch: client=%d server=%d", modeBuf[0], downlinkMode(cfg))
+	if connutil.AbsInt64(time.Now().Unix()-ch.Timestamp.Unix()) > 60 {
+		return fmt.Errorf("time skew/replay")
 	}
 	return nil
-}
-
-func selectTableByProbe(r *bufio.Reader, cfg *ProtocolConfig, tables []*sudoku.Table) (*sudoku.Table, []byte, error) {
-	const (
-		maxProbeBytes = 64 * 1024
-		readChunk     = 4 * 1024
-	)
-	if len(tables) == 0 {
-		return nil, nil, fmt.Errorf("no table candidates")
-	}
-	if len(tables) > 255 {
-		return nil, nil, fmt.Errorf("too many table candidates: %d", len(tables))
-	}
-
-	probe, err := drainBuffered(r)
-	if err != nil {
-		return nil, nil, fmt.Errorf("drain buffered bytes failed: %w", err)
-	}
-
-	tmp := make([]byte, readChunk)
-	for {
-		if len(tables) == 1 {
-			tail, err := drainBuffered(r)
-			if err != nil {
-				return nil, nil, fmt.Errorf("drain buffered bytes failed: %w", err)
-			}
-			probe = append(probe, tail...)
-			return tables[0], probe, nil
-		}
-
-		needMore := false
-		for _, table := range tables {
-			err := probeHandshakeBytes(probe, cfg, table)
-			if err == nil {
-				tail, err := drainBuffered(r)
-				if err != nil {
-					return nil, nil, fmt.Errorf("drain buffered bytes failed: %w", err)
-				}
-				probe = append(probe, tail...)
-				return table, probe, nil
-			}
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-				needMore = true
-			}
-		}
-
-		if !needMore {
-			return nil, probe, fmt.Errorf("handshake table selection failed")
-		}
-		if len(probe) >= maxProbeBytes {
-			return nil, probe, fmt.Errorf("handshake probe exceeded %d bytes", maxProbeBytes)
-		}
-
-		n, err := r.Read(tmp)
-		if n > 0 {
-			probe = append(probe, tmp[:n]...)
-		}
-		if err != nil {
-			return nil, probe, fmt.Errorf("handshake probe read failed: %w", err)
-		}
-	}
 }
 
 // HandshakeResult bundles all outputs from the server-side handshake into a single struct
@@ -217,11 +121,20 @@ func ServerHandshakeWithUserHash(rawConn net.Conn, cfg *ProtocolConfig) (net.Con
 		return nil, "", "", err
 	}
 
-	// Read target address from the tunnel.
-	targetAddr, _, _, err := protocol.ReadAddress(conn)
+	msg, err := readFirstSessionMessage(conn)
 	if err != nil {
 		_ = conn.Close()
-		return nil, "", "", fail(fmt.Errorf("read target address failed: %w", err))
+		return nil, "", "", fail(fmt.Errorf("read session message failed: %w", err))
+	}
+	if msg.Type != tunnel.KIPTypeOpenTCP {
+		_ = conn.Close()
+		return nil, "", "", fail(fmt.Errorf("unexpected session message: %d", msg.Type))
+	}
+
+	targetAddr, _, _, err := protocol.ReadAddress(bytes.NewReader(msg.Payload))
+	if err != nil {
+		_ = conn.Close()
+		return nil, "", "", fail(fmt.Errorf("decode target address failed: %w", err))
 	}
 
 	return conn, targetAddr, userHash, nil
@@ -239,21 +152,25 @@ func ServerHandshakeAuto(rawConn net.Conn, cfg *ProtocolConfig) (conn net.Conn, 
 		return nil, "", false, err
 	}
 
-	isUoT, tuned, err := DetectUoT(conn)
+	msg, err := readFirstSessionMessage(conn)
 	if err != nil {
 		_ = conn.Close()
-		return nil, "", false, fail(fmt.Errorf("detect uot failed: %w", err))
+		return nil, "", false, fail(fmt.Errorf("read session message failed: %w", err))
 	}
-	if isUoT {
-		return tuned, "", true, nil
+	switch msg.Type {
+	case tunnel.KIPTypeStartUoT:
+		return conn, "", true, nil
+	case tunnel.KIPTypeOpenTCP:
+		targetAddr, _, _, err = protocol.ReadAddress(bytes.NewReader(msg.Payload))
+		if err != nil {
+			_ = conn.Close()
+			return nil, "", false, fail(fmt.Errorf("decode target address failed: %w", err))
+		}
+		return conn, targetAddr, false, nil
+	default:
+		_ = conn.Close()
+		return nil, "", false, fail(fmt.Errorf("unexpected session message: %d", msg.Type))
 	}
-
-	targetAddr, _, _, err = protocol.ReadAddress(tuned)
-	if err != nil {
-		_ = tuned.Close()
-		return nil, "", false, fail(fmt.Errorf("read target address failed: %w", err))
-	}
-	return tuned, targetAddr, false, nil
 }
 
 // ServerHandshakeAutoWithUserHash is like ServerHandshakeAuto but also returns the per-user handshake identifier.
@@ -263,21 +180,25 @@ func ServerHandshakeAutoWithUserHash(rawConn net.Conn, cfg *ProtocolConfig) (con
 		return nil, "", false, "", err
 	}
 
-	isUoT, tuned, err := DetectUoT(conn)
+	msg, err := readFirstSessionMessage(conn)
 	if err != nil {
 		_ = conn.Close()
-		return nil, "", false, "", fail(fmt.Errorf("detect uot failed: %w", err))
+		return nil, "", false, "", fail(fmt.Errorf("read session message failed: %w", err))
 	}
-	if isUoT {
-		return tuned, "", true, userHash, nil
+	switch msg.Type {
+	case tunnel.KIPTypeStartUoT:
+		return conn, "", true, userHash, nil
+	case tunnel.KIPTypeOpenTCP:
+		targetAddr, _, _, err = protocol.ReadAddress(bytes.NewReader(msg.Payload))
+		if err != nil {
+			_ = conn.Close()
+			return nil, "", false, "", fail(fmt.Errorf("decode target address failed: %w", err))
+		}
+		return conn, targetAddr, false, userHash, nil
+	default:
+		_ = conn.Close()
+		return nil, "", false, "", fail(fmt.Errorf("unexpected session message: %d", msg.Type))
 	}
-
-	targetAddr, _, _, err = protocol.ReadAddress(tuned)
-	if err != nil {
-		_ = tuned.Close()
-		return nil, "", false, "", fail(fmt.Errorf("read target address failed: %w", err))
-	}
-	return tuned, targetAddr, false, userHash, nil
 }
 
 // ServerHandshakeFlexible upgrades the connection and leaves payload parsing (address or UoT) to the caller.
@@ -291,16 +212,22 @@ func ServerHandshakeFlexibleWithUserHash(rawConn net.Conn, cfg *ProtocolConfig) 
 	return serverHandshakeCoreWithUserHash(rawConn, cfg)
 }
 
-func userHashFromHandshake(handshakeBuf []byte) string {
-	if len(handshakeBuf) < 16 {
-		return ""
-	}
-	return hex.EncodeToString(handshakeBuf[8:16])
-}
-
 func serverHandshakeCore(rawConn net.Conn, cfg *ProtocolConfig) (net.Conn, func(error) error, error) {
 	conn, _, fail, err := serverHandshakeCoreWithUserHash(rawConn, cfg)
 	return conn, fail, err
+}
+
+func readFirstSessionMessage(conn net.Conn) (*tunnel.KIPMessage, error) {
+	for {
+		msg, err := tunnel.ReadKIPMessage(conn)
+		if err != nil {
+			return nil, err
+		}
+		if msg.Type == tunnel.KIPTypeKeepAlive {
+			continue
+		}
+		return msg, nil
+	}
 }
 
 func serverHandshakeCoreWithUserHash(rawConn net.Conn, cfg *ProtocolConfig) (net.Conn, string, func(error) error, error) {
@@ -339,7 +266,9 @@ func serverHandshakeCoreWithUserHash(rawConn net.Conn, cfg *ProtocolConfig) (net
 	}
 
 	tables := cfg.tableCandidates()
-	selectedTable, preRead, err := selectTableByProbe(bufReader, cfg, tables)
+	selectedTable, preRead, err := tunnel.SelectTableByProbe(bufReader, tables, func(probe []byte, table *sudoku.Table) error {
+		return probeHandshakeBytes(probe, cfg, table)
+	})
 	if err != nil {
 		rawConn.SetReadDeadline(time.Time{})
 		return nil, "", nil, &HandshakeError{
@@ -350,9 +279,8 @@ func serverHandshakeCoreWithUserHash(rawConn net.Conn, cfg *ProtocolConfig) (net
 		}
 	}
 
-	baseConn := &preBufferedConn{Conn: rawConn, buf: preRead}
-	bConn := &bufferedConn{Conn: baseConn, r: bufio.NewReader(baseConn)}
-	sConn, obfsConn := buildServerObfsConn(bConn, cfg, selectedTable, true)
+	baseConn := tunnel.NewPreBufferedConn(rawConn, preRead)
+	sConn, obfsConn := buildServerObfsConn(baseConn, cfg, selectedTable, true)
 
 	fail := func(originalErr error) error {
 		rawConn.SetReadDeadline(time.Time{})
@@ -365,36 +293,58 @@ func serverHandshakeCoreWithUserHash(rawConn net.Conn, cfg *ProtocolConfig) (net
 		}
 	}
 
-	cConn, err := crypto.NewAEADConn(obfsConn, cfg.Key, cfg.AEADMethod)
+	pskC2S, pskS2C := tunnel.DerivePSKDirectionalBases(cfg.Key)
+	cConn, err := crypto.NewRecordConn(obfsConn, cfg.AEADMethod, pskS2C, pskC2S)
 	if err != nil {
 		return nil, "", nil, fail(fmt.Errorf("crypto setup failed: %w", err))
 	}
 
-	handshakeBuf := make([]byte, 16)
-	if _, err := io.ReadFull(cConn, handshakeBuf); err != nil {
-		cConn.Close()
-		return nil, "", nil, fail(fmt.Errorf("read handshake failed: %w", err))
+	msg, err := tunnel.ReadKIPMessage(cConn)
+	if err != nil {
+		return nil, "", nil, fail(fmt.Errorf("read client hello failed: %w", err))
+	}
+	if msg.Type != tunnel.KIPTypeClientHello {
+		return nil, "", nil, fail(fmt.Errorf("unexpected handshake message: %d", msg.Type))
+	}
+	ch, err := tunnel.DecodeKIPClientHelloPayload(msg.Payload)
+	if err != nil {
+		return nil, "", nil, fail(fmt.Errorf("decode client hello failed: %w", err))
+	}
+	if connutil.AbsInt64(time.Now().Unix()-ch.Timestamp.Unix()) > 60 {
+		return nil, "", nil, fail(fmt.Errorf("time skew/replay"))
 	}
 
-	ts := int64(binary.BigEndian.Uint64(handshakeBuf[:8]))
-	now := time.Now().Unix()
-	if connutil.AbsInt64(now-ts) > 60 {
-		cConn.Close()
-		return nil, "", nil, fail(fmt.Errorf("timestamp skew/replay detected: server_time=%d client_time=%d", now, ts))
+	userHash := hex.EncodeToString(ch.UserHash[:])
+
+	curve := ecdh.X25519()
+	serverEphemeral, err := curve.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, "", nil, fail(fmt.Errorf("ecdh generate failed: %w", err))
 	}
-	userHash := userHashFromHandshake(handshakeBuf)
+	shared, err := tunnel.X25519SharedSecret(serverEphemeral, ch.ClientPub[:])
+	if err != nil {
+		return nil, "", nil, fail(fmt.Errorf("ecdh failed: %w", err))
+	}
+	sessC2S, sessS2C, err := tunnel.DeriveSessionDirectionalBases(cfg.Key, shared, ch.Nonce)
+	if err != nil {
+		return nil, "", nil, fail(fmt.Errorf("derive session keys failed: %w", err))
+	}
+
+	var serverPub [32]byte
+	copy(serverPub[:], serverEphemeral.PublicKey().Bytes())
+	sh := &tunnel.KIPServerHello{
+		Nonce:         ch.Nonce,
+		ServerPub:     serverPub,
+		SelectedFeats: ch.Features,
+	}
+	if err := tunnel.WriteKIPMessage(cConn, tunnel.KIPTypeServerHello, sh.EncodePayload()); err != nil {
+		return nil, "", nil, fail(fmt.Errorf("write server hello failed: %w", err))
+	}
+	if err := cConn.Rekey(sessS2C, sessC2S); err != nil {
+		return nil, "", nil, fail(fmt.Errorf("rekey failed: %w", err))
+	}
 
 	sConn.StopRecording()
-
-	modeBuf := []byte{0}
-	if _, err := io.ReadFull(cConn, modeBuf); err != nil {
-		cConn.Close()
-		return nil, "", nil, fail(fmt.Errorf("read downlink mode failed: %w", err))
-	}
-	if modeBuf[0] != downlinkMode(cfg) {
-		cConn.Close()
-		return nil, "", nil, fail(fmt.Errorf("downlink mode mismatch: client=%d server=%d", modeBuf[0], downlinkMode(cfg)))
-	}
 
 	rawConn.SetReadDeadline(time.Time{})
 	return cConn, userHash, fail, nil

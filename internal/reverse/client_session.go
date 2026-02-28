@@ -1,10 +1,8 @@
 package reverse
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"strings"
 	"time"
@@ -24,11 +22,6 @@ func ServeClientSession(conn net.Conn, clientID string, routes []config.ReverseR
 
 	clientID = strings.TrimSpace(clientID)
 
-	// Preface.
-	if _, err := conn.Write([]byte{tunnel.ReverseMagicByte, tunnel.ReverseVersion}); err != nil {
-		return err
-	}
-
 	msg := helloMessage{
 		ClientID: clientID,
 		Routes:   append([]config.ReverseRoute(nil), routes...),
@@ -40,23 +33,8 @@ func ServeClientSession(conn net.Conn, clientID string, routes []config.ReverseR
 	if len(raw) == 0 || len(raw) > maxHelloBytes {
 		return fmt.Errorf("reverse hello too large: %d", len(raw))
 	}
-
-	var lenBuf [4]byte
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(raw)))
-	if _, err := conn.Write(lenBuf[:]); err != nil {
+	if err := tunnel.WriteKIPMessage(conn, tunnel.KIPTypeStartRev, raw); err != nil {
 		return err
-	}
-	if _, err := conn.Write(raw); err != nil {
-		return err
-	}
-
-	// Server must reply with a mux preface; consume magic then let mux handler read version.
-	var magic [1]byte
-	if _, err := io.ReadFull(conn, magic[:]); err != nil {
-		return err
-	}
-	if magic[0] != tunnel.MuxMagicByte {
-		return fmt.Errorf("unexpected server preface byte: %d", magic[0])
 	}
 
 	allowed := make(map[string]struct{}, len(routes))

@@ -1,7 +1,6 @@
 package reverse
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,9 +21,8 @@ type helloMessage struct {
 }
 
 // HandleServerSession handles a reverse client registration connection.
-//
-// The ReverseMagicByte has already been consumed by the caller.
-func HandleServerSession(conn net.Conn, userHash string, mgr *Manager) error {
+// helloPayload is the JSON payload from the control plane.
+func HandleServerSession(conn net.Conn, userHash string, mgr *Manager, helloPayload []byte) error {
 	if conn == nil {
 		return fmt.Errorf("nil conn")
 	}
@@ -32,30 +30,12 @@ func HandleServerSession(conn net.Conn, userHash string, mgr *Manager) error {
 		return fmt.Errorf("reverse manager not configured")
 	}
 
-	var ver [1]byte
-	if _, err := io.ReadFull(conn, ver[:]); err != nil {
-		return err
-	}
-	if ver[0] != tunnel.ReverseVersion {
-		return fmt.Errorf("unsupported reverse version: %d", ver[0])
-	}
-
-	var lenBuf [4]byte
-	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
-		return err
-	}
-	n := int(binary.BigEndian.Uint32(lenBuf[:]))
-	if n <= 0 || n > maxHelloBytes {
-		return fmt.Errorf("invalid reverse hello size: %d", n)
-	}
-
-	payload := make([]byte, n)
-	if _, err := io.ReadFull(conn, payload); err != nil {
-		return err
+	if len(helloPayload) == 0 || len(helloPayload) > maxHelloBytes {
+		return fmt.Errorf("invalid reverse hello size: %d", len(helloPayload))
 	}
 
 	var hello helloMessage
-	if err := json.Unmarshal(payload, &hello); err != nil {
+	if err := json.Unmarshal(helloPayload, &hello); err != nil {
 		return fmt.Errorf("invalid reverse hello: %w", err)
 	}
 

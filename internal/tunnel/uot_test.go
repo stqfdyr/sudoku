@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"net"
 	"testing"
+	"time"
 )
 
 func TestUoTDatagram_RoundTrip(t *testing.T) {
@@ -54,7 +55,7 @@ func TestReadUoTDatagram_Truncated(t *testing.T) {
 	}
 }
 
-func TestHandleUoTServer_BadVersion(t *testing.T) {
+func TestHandleUoTServer_ConnClosed(t *testing.T) {
 	client, server := net.Pipe()
 	t.Cleanup(func() {
 		_ = client.Close()
@@ -64,8 +65,10 @@ func TestHandleUoTServer_BadVersion(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- HandleUoTServer(server) }()
 
-	_, _ = client.Write([]byte{0xFF})
-	if err := <-errCh; err == nil {
-		t.Fatalf("expected error")
+	_ = client.Close()
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout")
 	}
 }

@@ -23,7 +23,7 @@ type shortLinkPayload struct {
 	CustomTables   []string `json:"ts,omitempty"` // optional custom byte layouts (rotation)
 	// HTTP mask / tunnel controls (optional).
 	DisableHTTPMask bool   `json:"hd,omitempty"` // when true, disable HTTP mask completely
-	HTTPMaskMode    string `json:"hm,omitempty"` // "legacy" / "stream" / "poll" / "auto"
+	HTTPMaskMode    string `json:"hm,omitempty"` // "legacy" / "stream" / "poll" / "auto" / "ws"
 	HTTPMaskTLS     bool   `json:"ht,omitempty"` // enable HTTPS (when false/omitted, use plain HTTP)
 	HTTPMaskHost    string `json:"hh,omitempty"` // override HTTP Host/SNI in tunnel modes
 	HTTPMaskMux     string `json:"hx,omitempty"` // "off" / "auto" / "on"
@@ -63,10 +63,6 @@ func BuildShortLinkFromConfig(cfg *Config, advertiseHost string) (string, error)
 	payload.CustomTable = cfg.CustomTable
 	if len(cfg.CustomTables) > 0 {
 		payload.CustomTables = append([]string(nil), cfg.CustomTables...)
-		// Keep field "t" as a backward-compatible single-table fallback for older clients.
-		if strings.TrimSpace(payload.CustomTable) == "" {
-			payload.CustomTable = cfg.CustomTables[0]
-		}
 	}
 
 	payload.DisableHTTPMask = cfg.HTTPMask.Disable

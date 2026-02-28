@@ -7,8 +7,6 @@ import (
 )
 
 // HandleMuxServer runs a "single tunnel, multi-target" mux session on an upgraded tunnel connection.
-//
-// The MuxMagicByte must have been consumed by the caller (e.g. via ServerHandshakeSessionAuto).
 func HandleMuxServer(conn net.Conn, onConnect func(targetAddr string)) error {
 	return tunnel.HandleMuxServer(conn, onConnect)
 }

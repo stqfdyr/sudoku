@@ -90,10 +90,10 @@ func runSetupWizardTUI(defaultServerPath, publicHost string) (wizardInput, bool,
 
 	validateHTTPMaskMode := func(v string) error {
 		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "legacy", "auto", "stream", "poll":
+		case "legacy", "auto", "stream", "poll", "ws":
 			return nil
 		default:
-			return fmt.Errorf("must be legacy/auto/stream/poll")
+			return fmt.Errorf("must be legacy/auto/stream/poll/ws")
 		}
 	}
 
@@ -178,7 +178,7 @@ func runSetupWizardTUI(defaultServerPath, publicHost string) (wizardInput, bool,
 				Description("Disable HTTP masking completely for direct TCP").
 				Value(&disableHTTPMask),
 			huh.NewInput().
-				Title("HTTP mask mode (legacy/auto/stream/poll)").
+				Title("HTTP mask mode (legacy/auto/stream/poll/ws)").
 				Value(&httpMaskMode).
 				Validate(validateHTTPMaskMode),
 			huh.NewConfirm().

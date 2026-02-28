@@ -6,14 +6,12 @@ package config
 //
 //	"httpmask": {
 //	  "disable": false,
-//	  "mode": "legacy|stream|poll|auto",
+//	  "mode": "legacy|stream|poll|auto|ws",
 //	  "tls": false,
 //	  "host": "",
 //	  "path_root": "",
 //	  "multiplex": "off|auto|on"
 //	}
-//
-// Backward compatibility with legacy top-level fields is implemented in Config.UnmarshalJSON.
 type HTTPMaskConfig struct {
 	Disable bool   `json:"disable"`
 	Mode    string `json:"mode"`

@@ -21,6 +21,8 @@ func normalizeHTTPMaskMode(mode string) string {
 		return "poll"
 	case "auto":
 		return "auto"
+	case "ws":
+		return "ws"
 	default:
 		return "legacy"
 	}
@@ -78,31 +80,6 @@ func (c *Config) Finalize() error {
 	c.Key = strings.TrimSpace(c.Key)
 	c.AEAD = normalizeLower(c.AEAD)
 	c.CustomTable = strings.TrimSpace(c.CustomTable)
-
-	if c.Chain != nil {
-		if len(c.Chain.Hops) > 0 {
-			out := c.Chain.Hops[:0]
-			for _, v := range c.Chain.Hops {
-				v = strings.TrimSpace(v)
-				if v != "" {
-					out = append(out, v)
-				}
-			}
-			c.Chain.Hops = out
-		}
-		if len(c.Chain.Hops) == 0 {
-			c.Chain = nil
-		}
-	}
-
-	// Allow chain-only client configs where the first hop is provided in chain.hops and server_address is empty.
-	if c.Mode == "client" && c.ServerAddress == "" && c.Chain != nil && len(c.Chain.Hops) > 0 {
-		c.ServerAddress = c.Chain.Hops[0]
-		c.Chain.Hops = c.Chain.Hops[1:]
-		if len(c.Chain.Hops) == 0 {
-			c.Chain = nil
-		}
-	}
 
 	if len(c.CustomTables) > 0 {
 		out := c.CustomTables[:0]
@@ -239,7 +216,7 @@ func (c *Config) HTTPMaskTunnelEnabled() bool {
 		return false
 	}
 	switch c.HTTPMask.Mode {
-	case "stream", "poll", "auto":
+	case "stream", "poll", "auto", "ws":
 		return true
 	default:
 		return false

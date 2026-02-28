@@ -5,28 +5,13 @@ import (
 	"testing"
 )
 
-func TestBuildHandshakePayload(t *testing.T) {
+func TestKIPUserHashFromKey(t *testing.T) {
 	key := "handshake-key"
-	p := buildHandshakePayload(key)
-
-	if len(p) != 16 {
-		t.Fatalf("unexpected length %d", len(p))
-	}
-	allZero := true
+	got := kipUserHashFromKey(key)
+	want := sha256.Sum256([]byte(key))
 	for i := 0; i < 8; i++ {
-		if p[i] != 0 {
-			allZero = false
-			break
-		}
-	}
-	if allZero {
-		t.Fatalf("timestamp appears zero")
-	}
-
-	hash := sha256.Sum256([]byte(key))
-	for i := 0; i < 8; i++ {
-		if p[8+i] != hash[i] {
-			t.Fatalf("hash segment mismatch at %d", i)
+		if got[i] != want[i] {
+			t.Fatalf("mismatch at %d", i)
 		}
 	}
 }

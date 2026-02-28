@@ -53,12 +53,12 @@ func (m *ReverseManager) ServeEntry(listenAddr string) error {
 
 // HandleServerSession handles a reverse client registration connection.
 //
-// The ReverseMagicByte has already been consumed by the caller (e.g. via ServerHandshakeSessionAuto).
-func (m *ReverseManager) HandleServerSession(conn net.Conn, userHash string) error {
+// helloPayload is the JSON registration payload from the control plane.
+func (m *ReverseManager) HandleServerSession(conn net.Conn, userHash string, helloPayload []byte) error {
 	if m == nil || m.mgr == nil {
 		return fmt.Errorf("reverse manager is required")
 	}
-	return reverse.HandleServerSession(conn, userHash, m.mgr)
+	return reverse.HandleServerSession(conn, userHash, m.mgr, helloPayload)
 }
 
 // DialReverseClientSession dials the server and runs a reverse registration session until it ends.

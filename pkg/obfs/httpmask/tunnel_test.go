@@ -167,7 +167,6 @@ func TestTunnelServer_InferModeWithoutTunnelHeader_Stream(t *testing.T) {
 		"GET /httpmaskpath/session HTTP/1.1\r\n"+
 			"Host: example.com\r\n"+
 			"Authorization: Bearer %s\r\n"+
-			"X-Sudoku-Version: 1\r\n"+
 			"\r\n", authToken))
 
 	raw, _ := io.ReadAll(client)
@@ -229,7 +228,6 @@ func TestTunnelServer_InferModeWithoutTunnelHeader_Poll(t *testing.T) {
 		"GET /httpmaskpath/session HTTP/1.1\r\n"+
 			"Host: example.com\r\n"+
 			"Authorization: Bearer %s\r\n"+
-			"X-Sudoku-Version: 1\r\n"+
 			"\r\n", authToken))
 
 	raw, _ := io.ReadAll(client)
@@ -290,7 +288,6 @@ func TestTunnelServer_InferModeWithoutTunnelHeader_Stream_AuthQuery(t *testing.T
 	_, _ = io.WriteString(client, fmt.Sprintf(
 		"GET /httpmaskpath/session?auth=%s HTTP/1.1\r\n"+
 			"Host: example.com\r\n"+
-			"X-Sudoku-Version: 1\r\n"+
 			"\r\n", authToken))
 
 	raw, _ := io.ReadAll(client)
@@ -351,7 +348,6 @@ func TestTunnelServer_InferModeWithoutTunnelHeader_Poll_AuthQuery(t *testing.T) 
 	_, _ = io.WriteString(client, fmt.Sprintf(
 		"GET /httpmaskpath/session?auth=%s HTTP/1.1\r\n"+
 			"Host: example.com\r\n"+
-			"X-Sudoku-Version: 1\r\n"+
 			"\r\n", authToken))
 
 	raw, _ := io.ReadAll(client)
@@ -409,7 +405,6 @@ func TestTunnelServer_Stream_SplitSession_PushPull(t *testing.T) {
 			"GET /session HTTP/1.1\r\n"+
 				"Host: example.com\r\n"+
 				"X-Sudoku-Tunnel: stream\r\n"+
-				"X-Sudoku-Version: 1\r\n"+
 				"\r\n")
 		raw, _ := io.ReadAll(client)
 		<-done
@@ -471,7 +466,6 @@ func TestTunnelServer_Stream_SplitSession_PushPull(t *testing.T) {
 			"POST /api/v1/upload?token=%s HTTP/1.1\r\n"+
 				"Host: example.com\r\n"+
 				"X-Sudoku-Tunnel: stream\r\n"+
-				"X-Sudoku-Version: 1\r\n"+
 				"Content-Length: %d\r\n"+
 				"\r\n"+
 				"%s", token, len(payload), payload))
@@ -501,7 +495,6 @@ func TestTunnelServer_Stream_SplitSession_PushPull(t *testing.T) {
 			"GET /stream?token=%s HTTP/1.1\r\n"+
 				"Host: example.com\r\n"+
 				"X-Sudoku-Tunnel: stream\r\n"+
-				"X-Sudoku-Version: 1\r\n"+
 				"\r\n", token))
 
 		br := bufio.NewReader(client)
@@ -618,7 +611,6 @@ func TestTunnelServer_Stream_Auth_RejectsMissingToken(t *testing.T) {
 		"GET /session HTTP/1.1\r\n"+
 			"Host: example.com\r\n"+
 			"X-Sudoku-Tunnel: stream\r\n"+
-			"X-Sudoku-Version: 1\r\n"+
 			"\r\n")
 	_ = client.Close()
 	<-done
@@ -664,7 +656,6 @@ func TestTunnelServer_Stream_Auth_AllowsValidToken(t *testing.T) {
 		"GET /session HTTP/1.1\r\n"+
 			"Host: example.com\r\n"+
 			"X-Sudoku-Tunnel: stream\r\n"+
-			"X-Sudoku-Version: 1\r\n"+
 			"Authorization: Bearer %s\r\n"+
 			"\r\n", token))
 

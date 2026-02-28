@@ -12,10 +12,6 @@ import (
 )
 
 const (
-	// UoTMagicByte marks a Sudoku tunnel connection that carries UDP-over-TCP traffic.
-	UoTMagicByte byte = 0xEE
-	uotVersion        = 0x01
-
 	maxUoTPayload = 64 * 1024
 )
 
@@ -23,12 +19,6 @@ const (
 type UoTDialer interface {
 	Dialer
 	DialUDPOverTCP() (net.Conn, error)
-}
-
-// WriteUoTPreface writes the UDP-over-TCP marker and version.
-func WriteUoTPreface(w io.Writer) error {
-	_, err := w.Write([]byte{UoTMagicByte, uotVersion})
-	return err
 }
 
 // WriteUoTDatagram sends a single UDP datagram frame over the reliable tunnel.
@@ -98,14 +88,6 @@ func ReadUoTDatagram(r io.Reader) (string, []byte, error) {
 
 // HandleUoTServer bridges UDP packets over the already-upgraded tunnel connection.
 func HandleUoTServer(conn net.Conn) error {
-	versionBuf := make([]byte, 1)
-	if _, err := io.ReadFull(conn, versionBuf); err != nil {
-		return fmt.Errorf("read uot version: %w", err)
-	}
-	if versionBuf[0] != uotVersion {
-		return fmt.Errorf("unsupported uot version: %d", versionBuf[0])
-	}
-
 	pConn, err := net.ListenPacket("udp", "")
 	if err != nil {
 		return fmt.Errorf("listen udp for uot: %w", err)

@@ -1,9 +1,12 @@
 package app
 
 import (
+	"errors"
 	"io"
 	"net"
 	"sync"
+
+	"github.com/saba-futai/sudoku/pkg/logx"
 )
 
 type closeWriter interface {
@@ -55,5 +58,12 @@ func pipeConn(a, b net.Conn) {
 func copyOneWay(dst io.Writer, src io.Reader) {
 	buf := copyBufferPool.Get().([]byte)
 	defer copyBufferPool.Put(buf)
-	_, _ = io.CopyBuffer(dst, src, buf)
+	_, err := io.CopyBuffer(dst, src, buf)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+		return
+	}
+	logx.Warnf("Pipe", "copy error: %v", err)
 }

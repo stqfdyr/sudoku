@@ -17,6 +17,7 @@ const (
 	TunnelModeStream TunnelMode = "stream"
 	TunnelModePoll   TunnelMode = "poll"
 	TunnelModeAuto   TunnelMode = "auto"
+	TunnelModeWS     TunnelMode = "ws"
 )
 
 func normalizeTunnelMode(mode string) TunnelMode {
@@ -29,6 +30,8 @@ func normalizeTunnelMode(mode string) TunnelMode {
 		return TunnelModePoll
 	case string(TunnelModeAuto):
 		return TunnelModeAuto
+	case string(TunnelModeWS):
+		return TunnelModeWS
 	default:
 		// Be conservative: unknown => legacy
 		return TunnelModeLegacy
@@ -90,6 +93,23 @@ func DialTunnel(ctx context.Context, serverAddress string, opts TunnelDialOption
 		return dialStreamFn(ctx, serverAddress, opts)
 	case TunnelModePoll:
 		return dialPollFn(ctx, serverAddress, opts)
+	case TunnelModeWS:
+		c, err := dialWS(ctx, serverAddress, opts)
+		if err != nil {
+			return nil, err
+		}
+		outConn := net.Conn(c)
+		if opts.Upgrade != nil {
+			upgraded, err := opts.Upgrade(c)
+			if err != nil {
+				_ = c.Close()
+				return nil, err
+			}
+			if upgraded != nil {
+				outConn = upgraded
+			}
+		}
+		return outConn, nil
 	case TunnelModeAuto:
 		// "stream" can hang on some CDNs that buffer uploads until request body completes.
 		// Keep it on a short leash so we can fall back to poll within the caller's deadline.
@@ -129,5 +149,4 @@ func applyTunnelHeaders(h http.Header, host string, mode TunnelMode) {
 	h.Set("Connection", "keep-alive")
 	h.Set("Host", host)
 	h.Set("X-Sudoku-Tunnel", string(mode))
-	h.Set("X-Sudoku-Version", "1")
 }

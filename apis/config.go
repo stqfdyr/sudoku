@@ -21,7 +21,6 @@ package apis
 
 import (
 	"fmt"
-	"net"
 	"strings"
 
 	"github.com/saba-futai/sudoku/pkg/obfs/sudoku"
@@ -41,15 +40,6 @@ type ProtocolConfig struct {
 	// Format: "host:port" or "ip:port"
 	// Example: "example.com:443" or "1.2.3.4:8080"
 	ServerAddress string
-
-	// ChainHops enables multi-hop (chained) Sudoku proxying.
-	//
-	// When set (len>0), the client first connects to ServerAddress, then asks that server to connect to each hop
-	// in order, performing a full Sudoku handshake on every hop (nested tunnels). The final hop receives the
-	// TargetAddress.
-	//
-	// All hops share the same Key/AEAD/Table settings in this ProtocolConfig.
-	ChainHops []string
 
 	// ============ Encryption & Obfuscation ============
 
@@ -120,6 +110,7 @@ type ProtocolConfig struct {
 	//   - "stream": real HTTP tunnel (split-stream), CDN-compatible
 	//   - "poll": plain HTTP tunnel (authorize/push/pull), strong restricted-network pass-through
 	//   - "auto": try stream then fall back to poll
+	//   - "ws": WebSocket tunnel (ws:// or wss://)
 	HTTPMaskMode string
 
 	// HTTPMaskTLSEnabled enables HTTPS for HTTP tunnel modes (client-side).
@@ -185,9 +176,9 @@ func (c *ProtocolConfig) Validate() error {
 	}
 
 	switch strings.ToLower(strings.TrimSpace(c.HTTPMaskMode)) {
-	case "", "legacy", "stream", "poll", "auto":
+	case "", "legacy", "stream", "poll", "auto", "ws":
 	default:
-		return fmt.Errorf("invalid HTTPMaskMode: %s, must be one of: legacy, stream, poll, auto", c.HTTPMaskMode)
+		return fmt.Errorf("invalid HTTPMaskMode: %s, must be one of: legacy, stream, poll, auto, ws", c.HTTPMaskMode)
 	}
 
 	switch strings.ToLower(strings.TrimSpace(c.HTTPMaskMultiplex)) {
@@ -211,16 +202,6 @@ func (c *ProtocolConfig) Validate() error {
 			default:
 				return fmt.Errorf("invalid HTTPMaskPathRoot: contains invalid character %q", c)
 			}
-		}
-	}
-
-	for i, hop := range c.ChainHops {
-		hop = strings.TrimSpace(hop)
-		if hop == "" {
-			return fmt.Errorf("ChainHops[%d] cannot be empty", i)
-		}
-		if _, _, err := net.SplitHostPort(hop); err != nil {
-			return fmt.Errorf("ChainHops[%d] invalid address %q: %w", i, hop, err)
 		}
 	}
 

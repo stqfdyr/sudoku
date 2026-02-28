@@ -242,7 +242,7 @@ func TestHTTPMaskTunnel_Boundary_InvalidToken(t *testing.T) {
 	defer c.Close()
 
 	// poll pull with invalid token must be rejected.
-	io.WriteString(c, "GET /stream?token=bad HTTP/1.1\r\nHost: x\r\nX-Sudoku-Tunnel: poll\r\nX-Sudoku-Version: 1\r\n\r\n")
+	io.WriteString(c, "GET /stream?token=bad HTTP/1.1\r\nHost: x\r\nX-Sudoku-Tunnel: poll\r\n\r\n")
 	br := bufio.NewReader(c)
 	line, err := br.ReadString('\n')
 	if err != nil {
@@ -274,7 +274,7 @@ func TestHTTPMaskTunnel_Boundary_StreamBadPath(t *testing.T) {
 	}
 	defer c.Close()
 
-	io.WriteString(c, "POST /not-allowed HTTP/1.1\r\nHost: x\r\nX-Sudoku-Tunnel: stream\r\nX-Sudoku-Version: 1\r\n\r\n")
+	io.WriteString(c, "POST /not-allowed HTTP/1.1\r\nHost: x\r\nX-Sudoku-Tunnel: stream\r\n\r\n")
 	br := bufio.NewReader(c)
 	line, err := br.ReadString('\n')
 	if err != nil {

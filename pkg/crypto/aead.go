@@ -102,7 +102,7 @@ func (cc *AEADConn) Write(p []byte) (int, error) {
 		frameBuf.Write(nonce)
 		frameBuf.Write(ciphertext)
 
-		if _, err := cc.Conn.Write(frameBuf.Bytes()); err != nil {
+		if err := connutil.WriteFull(cc.Conn, frameBuf.Bytes()); err != nil {
 			return totalWritten, err
 		}
 		totalWritten += chunkSize

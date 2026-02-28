@@ -1,8 +1,8 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -75,11 +75,13 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 
 	// Graceful shutdown on SIGINT / SIGTERM.
 	sigCh := make(chan os.Signal, 1)
+	stopCh := make(chan struct{})
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		logx.Infof("Server", "Shutting down...")
-		l.Close()
+		close(stopCh)
+		_ = l.Close()
 	}()
 
 	for {
@@ -87,7 +89,7 @@ func RunServer(cfg *config.Config, tables []*sudoku.Table) {
 		if err != nil {
 			// If the listener was closed by signal, exit gracefully.
 			select {
-			case <-sigCh:
+			case <-stopCh:
 				return
 			default:
 				continue
@@ -115,7 +117,8 @@ func handleServerConn(rawConn net.Conn, cfg *config.Config, tables []*sudoku.Tab
 			return
 		case httpmask.HandlePassThrough:
 			if r, ok := c.(interface{ IsHTTPMaskRejected() bool }); ok && r.IsHTTPMaskRejected() {
-				handler.HandleSuspicious(c, rawConn, cfg)
+				// Use the pass-through conn for fallback proxying so any replay prefix is preserved.
+				handler.HandleSuspicious(c, c, cfg)
 				return
 			}
 			handleSudokuServerConn(c, rawConn, cfg, tables, true, revMgr)
@@ -137,7 +140,9 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 			logx.Warnf("Security", "Suspicious connection: %v", suspErr.Err)
 			// Only meaningful for direct TCP/legacy mask connections.
 			if allowFallback {
-				handler.HandleSuspicious(suspErr.Conn, rawConn, cfg)
+				// Use handshakeConn for proxying so we preserve any pre-read/replayed bytes (e.g. HTTP tunnel pass-through prefixes),
+				// but still use suspErr.Conn to extract any consumed/recorded bytes for the fallback.
+				handler.HandleSuspicious(suspErr.Conn, handshakeConn, cfg)
 			} else {
 				rawConn.Close()
 			}
@@ -153,14 +158,23 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 		userHash = meta.UserHash
 	}
 
-	// Read the first byte to detect session type (UoT / Mux / Reverse / normal).
-	firstByte := make([]byte, 1)
-	if _, err := io.ReadFull(tunnelConn, firstByte); err != nil {
-		logx.Warnf("Server", "Failed to read first byte: %v", err)
-		return
+	// Read the first KIP control message to detect session type (UoT / Mux / Reverse / normal).
+	var msg *tunnel.KIPMessage
+	for {
+		m, err := tunnel.ReadKIPMessage(tunnelConn)
+		if err != nil {
+			logx.Warnf("Server", "Failed to read KIP message: %v", err)
+			return
+		}
+		if m.Type == tunnel.KIPTypeKeepAlive {
+			continue
+		}
+		msg = m
+		break
 	}
 
-	if firstByte[0] == tunnel.UoTMagicByte {
+	switch msg.Type {
+	case tunnel.KIPTypeStartUoT:
 		logUserInfo("Server/UoT", userHash, "session start")
 		if err := tunnel.HandleUoTServer(tunnelConn); err != nil {
 			logUserWarn("Server/UoT", userHash, "session end: %v", err)
@@ -168,9 +182,7 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 			logUserInfo("Server/UoT", userHash, "session end")
 		}
 		return
-	}
-
-	if firstByte[0] == tunnel.MuxMagicByte {
+	case tunnel.KIPTypeStartMux:
 		logUserInfo("Server/Mux", userHash, "session start")
 		logConnect := func(addr string) {
 			logUserInfo("Server/Mux", userHash, "Connecting to %s", addr)
@@ -181,40 +193,37 @@ func handleSudokuServerConn(handshakeConn net.Conn, rawConn net.Conn, cfg *confi
 			logUserInfo("Server/Mux", userHash, "session end")
 		}
 		return
-	}
-
-	if firstByte[0] == tunnel.ReverseMagicByte {
+	case tunnel.KIPTypeStartRev:
 		if revMgr == nil {
 			logx.Warnf("Server/Reverse", "reverse proxy not enabled (missing reverse.listen)")
 			return
 		}
 		logUserInfo("Server/Reverse", userHash, "session start")
-		if err := reverse.HandleServerSession(tunnelConn, userHash, revMgr); err != nil {
+		if err := reverse.HandleServerSession(tunnelConn, userHash, revMgr, msg.Payload); err != nil {
 			logUserWarn("Server/Reverse", userHash, "session end: %v", err)
 		} else {
 			logUserInfo("Server/Reverse", userHash, "session end")
 		}
 		return
-	}
+	case tunnel.KIPTypeOpenTCP:
+		destAddrStr, _, _, err := protocol.ReadAddress(bytes.NewReader(msg.Payload))
+		if err != nil {
+			logx.Warnf("Server", "Failed to decode target address: %v", err)
+			return
+		}
 
-	// Not a special session: replay the peeked byte and read the target address.
-	prefixedConn := tunnel.NewPreBufferedConn(tunnelConn, firstByte)
+		logUserInfo("Server", userHash, "Connecting to %s", destAddrStr)
 
-	// Read target address from the uplink.
-	destAddrStr, _, _, err := protocol.ReadAddress(prefixedConn)
-	if err != nil {
-		logx.Warnf("Server", "Failed to read target address: %v", err)
+		target, err := net.DialTimeout("tcp", destAddrStr, 10*time.Second)
+		if err != nil {
+			logx.Warnf("Server", "Connect target failed: %v", err)
+			return
+		}
+
+		pipeConn(tunnelConn, target)
+		return
+	default:
+		logx.Warnf("Server", "Unknown KIP message: %d", msg.Type)
 		return
 	}
-
-	logUserInfo("Server", userHash, "Connecting to %s", destAddrStr)
-
-	target, err := net.DialTimeout("tcp", destAddrStr, 10*time.Second)
-	if err != nil {
-		logx.Warnf("Server", "Connect target failed: %v", err)
-		return
-	}
-
-	// Relay data.
-	pipeConn(prefixedConn, target)
 }

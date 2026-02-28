@@ -12,11 +12,7 @@ import (
 	"github.com/saba-futai/sudoku/internal/protocol"
 )
 
-// HandleMuxServer handles a multiplexed tunnel connection after the MuxMagicByte has been consumed.
-//
-// Wire format:
-//   - [MuxMagicByte][muxVersion] (magic is consumed by caller; this function reads the version)
-//   - then mux frames (open/data/close/reset)
+// HandleMuxServer handles a multiplexed tunnel connection after the control plane has selected mux mode.
 func HandleMuxServer(conn net.Conn, onConnect func(targetAddr string)) error {
 	dial := func(addr string) (net.Conn, error) {
 		return net.DialTimeout("tcp", addr, 10*time.Second)
@@ -34,14 +30,6 @@ func HandleMuxWithDialer(conn net.Conn, onConnect func(targetAddr string), dialT
 	}
 	if dialTarget == nil {
 		return fmt.Errorf("nil dialTarget")
-	}
-
-	var ver [1]byte
-	if _, err := io.ReadFull(conn, ver[:]); err != nil {
-		return err
-	}
-	if ver[0] != muxVersion {
-		return fmt.Errorf("unsupported mux version: %d", ver[0])
 	}
 
 	sess := newMuxSession(conn, func(stream *muxStream, payload []byte) {

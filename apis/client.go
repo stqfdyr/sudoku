@@ -20,17 +20,17 @@ with this application without prior consent.
 package apis
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"strings"
-	"time"
 
 	"github.com/saba-futai/sudoku/internal/protocol"
+	"github.com/saba-futai/sudoku/internal/tunnel"
 	"github.com/saba-futai/sudoku/pkg/crypto"
 	"github.com/saba-futai/sudoku/pkg/dnsutil"
 	"github.com/saba-futai/sudoku/pkg/obfs/httpmask"
@@ -44,18 +44,17 @@ func canonicalCryptoSeedKey(key string) string {
 	return key
 }
 
-func buildHandshakePayload(key string) [16]byte {
-	var payload [16]byte
-	binary.BigEndian.PutUint64(payload[:8], uint64(time.Now().Unix()))
+func kipUserHashFromKey(key string) [8]byte {
 	src := []byte(key)
 	if _, err := crypto.RecoverPublicKey(key); err == nil {
 		if keyBytes, decErr := hex.DecodeString(key); decErr == nil && len(keyBytes) > 0 {
 			src = keyBytes
 		}
 	}
-	hash := sha256.Sum256(src)
-	copy(payload[8:], hash[:8])
-	return payload
+	sum := sha256.Sum256(src)
+	var out [8]byte
+	copy(out[:], sum[:8])
+	return out
 }
 
 func pickClientTable(cfg *ProtocolConfig) (*sudoku.Table, error) {
@@ -79,9 +78,10 @@ func wrapClientConn(rawConn net.Conn, cfg *ProtocolConfig, table *sudoku.Table, 
 	if strings.TrimSpace(seed) == "" {
 		seed = cfg.Key
 	}
-	cConn, err := crypto.NewAEADConn(obfsConn, seed, cfg.AEADMethod)
+	pskC2S, pskS2C := tunnel.DerivePSKDirectionalBases(seed)
+	cConn, err := crypto.NewRecordConn(obfsConn, cfg.AEADMethod, pskC2S, pskS2C)
 	if err != nil {
-		rawConn.Close()
+		_ = rawConn.Close()
 		return nil, fmt.Errorf("setup crypto failed: %w", err)
 	}
 	return cConn, nil
@@ -93,14 +93,14 @@ func upgradeClientConn(rawConn net.Conn, cfg *ProtocolConfig, table *sudoku.Tabl
 		return nil, err
 	}
 
-	handshake := buildHandshakePayload(cfg.Key)
-	if _, err := cConn.Write(handshake[:]); err != nil {
+	rc, _ := cConn.(*crypto.RecordConn)
+	if rc == nil {
 		_ = cConn.Close()
-		return nil, fmt.Errorf("send handshake failed: %w", err)
+		return nil, fmt.Errorf("unexpected conn type")
 	}
-	if _, err := cConn.Write([]byte{downlinkMode(cfg)}); err != nil {
+	if _, err := tunnel.KIPHandshakeClient(rc, seed, kipUserHashFromKey(cfg.Key), tunnel.KIPFeatAll); err != nil {
 		_ = cConn.Close()
-		return nil, fmt.Errorf("send downlink mode failed: %w", err)
+		return nil, err
 	}
 
 	if postHandshake != nil {
@@ -116,7 +116,11 @@ func upgradeClientConn(rawConn net.Conn, cfg *ProtocolConfig, table *sudoku.Tabl
 // Dial opens a Sudoku tunnel to cfg.ServerAddress and requests cfg.TargetAddress.
 func Dial(ctx context.Context, cfg *ProtocolConfig) (net.Conn, error) {
 	baseConn, err := establishBaseConn(ctx, cfg, func(c *ProtocolConfig) error { return c.ValidateClient() }, func(conn net.Conn) error {
-		if err := protocol.WriteAddress(conn, cfg.TargetAddress); err != nil {
+		var addrBuf bytes.Buffer
+		if err := protocol.WriteAddress(&addrBuf, cfg.TargetAddress); err != nil {
+			return fmt.Errorf("encode target address failed: %w", err)
+		}
+		if err := tunnel.WriteKIPMessage(conn, tunnel.KIPTypeOpenTCP, addrBuf.Bytes()); err != nil {
 			return fmt.Errorf("send target address failed: %w", err)
 		}
 		return nil
@@ -148,7 +152,7 @@ func establishBaseConn(ctx context.Context, cfg *ProtocolConfig, validate func(*
 	var baseConn net.Conn
 	if !cfg.DisableHTTPMask {
 		switch strings.ToLower(strings.TrimSpace(cfg.HTTPMaskMode)) {
-		case "stream", "poll", "auto":
+		case "stream", "poll", "auto", "ws":
 			table, err := pickClientTable(cfg)
 			if err != nil {
 				return nil, err
@@ -172,15 +176,6 @@ func establishBaseConn(ctx context.Context, cfg *ProtocolConfig, validate func(*
 		}
 	}
 	if baseConn != nil {
-		if len(cfg.ChainHops) > 0 {
-			chained, err := chainUpgradeConn(baseConn, cfg, seed)
-			if err != nil {
-				_ = baseConn.Close()
-				return nil, err
-			}
-			baseConn = chained
-		}
-
 		if postHandshake != nil {
 			if err := postHandshake(baseConn); err != nil {
 				_ = baseConn.Close()
@@ -224,15 +219,6 @@ func establishBaseConn(ctx context.Context, cfg *ProtocolConfig, validate func(*
 		return nil, err
 	}
 
-	if len(cfg.ChainHops) > 0 {
-		chained, err := chainUpgradeConn(cConn, cfg, seed)
-		if err != nil {
-			_ = cConn.Close()
-			return nil, err
-		}
-		cConn = chained
-	}
-
 	if postHandshake != nil {
 		if err := postHandshake(cConn); err != nil {
 			_ = cConn.Close()
@@ -252,35 +238,4 @@ func validateBaseClientConfig(cfg *ProtocolConfig) error {
 		return fmt.Errorf("ServerAddress cannot be empty")
 	}
 	return cfg.Validate()
-}
-
-func chainUpgradeConn(conn net.Conn, cfg *ProtocolConfig, seed string) (net.Conn, error) {
-	cur := conn
-	for _, hopAddr := range cfg.ChainHops {
-		hopAddr = strings.TrimSpace(hopAddr)
-		if hopAddr == "" {
-			return nil, fmt.Errorf("empty chain hop")
-		}
-
-		if err := protocol.WriteAddress(cur, hopAddr); err != nil {
-			return nil, fmt.Errorf("chain write hop address failed: %w", err)
-		}
-		if !cfg.DisableHTTPMask {
-			if err := httpmask.WriteRandomRequestHeaderWithPathRoot(cur, hopAddr, cfg.HTTPMaskPathRoot); err != nil {
-				return nil, fmt.Errorf("chain write http mask failed: %w", err)
-			}
-		}
-
-		table, err := pickClientTable(cfg)
-		if err != nil {
-			return nil, err
-		}
-
-		next, err := upgradeClientConn(cur, cfg, table, seed, nil)
-		if err != nil {
-			return nil, err
-		}
-		cur = next
-	}
-	return cur, nil
 }

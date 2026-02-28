@@ -63,7 +63,7 @@ func TestLoadRejectsPackedWithoutAEAD(t *testing.T) {
 	}
 }
 
-func TestLoadPathRootCompat(t *testing.T) {
+func TestLoadHTTPMaskPathRoot(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -71,9 +71,7 @@ func TestLoadPathRootCompat(t *testing.T) {
 		extraJSON   string
 		expectValue string
 	}{
-		{name: "new-httpmask-object", extraJSON: `"httpmask": {"path_root": "aabbcc"}`, expectValue: "aabbcc"},
-		{name: "legacy-path_root", extraJSON: `"path_root": "aabbcc"`, expectValue: "aabbcc"},
-		{name: "legacy-http_mask_path_root", extraJSON: `"http_mask_path_root": "aabbcc"`, expectValue: "aabbcc"},
+		{name: "httpmask-object", extraJSON: `"httpmask": {"path_root": "aabbcc"}`, expectValue: "aabbcc"},
 	}
 
 	for _, tc := range cases {

@@ -1,0 +1,144 @@
+package httpmask
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"net/textproto"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/coder/websocket"
+)
+
+func looksLikeWebSocketUpgrade(headers map[string]string) bool {
+	if headers == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(headers["upgrade"]), "websocket") {
+		return false
+	}
+	conn := headers["connection"]
+	for _, part := range strings.Split(conn, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), "upgrade") {
+			return true
+		}
+	}
+	return false
+}
+
+type hijackRW struct {
+	conn  net.Conn
+	hdr   http.Header
+	wrote bool
+}
+
+func (w *hijackRW) Header() http.Header {
+	if w.hdr == nil {
+		w.hdr = make(http.Header)
+	}
+	return w.hdr
+}
+
+func (w *hijackRW) WriteHeader(statusCode int) {
+	if w == nil || w.conn == nil || w.wrote {
+		return
+	}
+	w.wrote = true
+
+	statusText := http.StatusText(statusCode)
+	if statusText == "" {
+		statusText = "status"
+	}
+	_, _ = fmt.Fprintf(w.conn, "HTTP/1.1 %d %s\r\n", statusCode, statusText)
+	for k, vs := range w.Header() {
+		ck := textproto.CanonicalMIMEHeaderKey(k)
+		for _, v := range vs {
+			_, _ = fmt.Fprintf(w.conn, "%s: %s\r\n", ck, v)
+		}
+	}
+	_, _ = w.conn.Write([]byte("\r\n"))
+}
+
+func (w *hijackRW) Write(p []byte) (int, error) {
+	if w == nil || w.conn == nil {
+		return 0, fmt.Errorf("nil conn")
+	}
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.conn.Write(p)
+}
+
+func (w *hijackRW) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if w == nil || w.conn == nil {
+		return nil, nil, fmt.Errorf("nil conn")
+	}
+	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+}
+
+func (w *hijackRW) Flush() {}
+
+func buildHTTPRequestFromHeaderBytes(headerBytes []byte, rawConn net.Conn) (*http.Request, error) {
+	r, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(headerBytes)))
+	if err != nil {
+		return nil, err
+	}
+	if rawConn != nil {
+		r.RemoteAddr = rawConn.RemoteAddr().String()
+	}
+	// Ensure canonical header keys for downstream lookups.
+	if r.Header != nil {
+		canon := make(http.Header, len(r.Header))
+		for k, vs := range r.Header {
+			ck := textproto.CanonicalMIMEHeaderKey(k)
+			canon[ck] = vs
+		}
+		r.Header = canon
+	}
+	return r, nil
+}
+
+func (s *TunnelServer) handleWS(rawConn net.Conn, req *httpRequestHeader, headerBytes []byte, buffered []byte) (HandleResult, net.Conn, error) {
+	u, err := url.ParseRequestURI(req.target)
+	if err != nil {
+		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+	}
+
+	path, ok := stripPathRoot(s.pathRoot, u.Path)
+	if !ok || path != "/ws" {
+		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+	}
+	if strings.ToUpper(strings.TrimSpace(req.method)) != http.MethodGet {
+		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+	}
+
+	authVal := req.headers["authorization"]
+	if authVal == "" {
+		authVal = u.Query().Get(tunnelAuthQueryKey)
+	}
+	if !s.auth.verifyValue(authVal, TunnelModeWS, req.method, path, time.Now()) {
+		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusNotFound, "not found")
+	}
+
+	// Preserve any bytes read beyond the HTTP header as initial WebSocket stream bytes.
+	wsConnRaw := newPreBufferedConn(rawConn, buffered)
+	r, err := buildHTTPRequestFromHeaderBytes(headerBytes, rawConn)
+	if err != nil {
+		return s.rejectOrReply(rawConn, headerBytes, buffered, http.StatusBadRequest, "bad request")
+	}
+
+	c, err := websocket.Accept(&hijackRW{conn: wsConnRaw}, r, &websocket.AcceptOptions{
+		CompressionMode: websocket.CompressionDisabled,
+	})
+	if err != nil {
+		// Accept already wrote a response (or the client is not a WS handshake).
+		_ = rawConn.Close()
+		return HandleDone, nil, nil
+	}
+	return HandleStartTunnel, websocket.NetConn(context.Background(), c, websocket.MessageBinary), nil
+}

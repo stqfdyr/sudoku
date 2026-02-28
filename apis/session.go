@@ -1,8 +1,8 @@
 package apis
 
 import (
+	"bytes"
 	"fmt"
-	"io"
 	"net"
 
 	"github.com/saba-futai/sudoku/internal/protocol"
@@ -11,11 +11,7 @@ import (
 
 // SessionKind describes the payload type carried by a Sudoku tunnel connection after the handshake.
 //
-// The first payload byte selects the session mode:
-//   - UoT:     [UoTMagicByte][version]...
-//   - Mux:     [MuxMagicByte][version]...
-//   - Reverse: [ReverseMagicByte][version]...
-//   - Forward: SOCKS5-style target address
+// The first control-plane message selects the session mode.
 type SessionKind uint8
 
 const (
@@ -32,43 +28,49 @@ const (
 // ServerHandshakeSessionAutoWithUserHash upgrades the connection and auto-detects the session kind.
 //
 // Returns:
-//   - conn: the upgraded tunnel connection. For SessionUoT/SessionMux/SessionReverse, the magic byte is consumed.
+//   - conn: the upgraded tunnel connection. The control-plane message is always consumed.
 //   - session: the detected session kind
 //   - targetAddr: valid only when session==SessionForward
 //   - userHash: per-user handshake identifier (if available)
-func ServerHandshakeSessionAutoWithUserHash(rawConn net.Conn, cfg *ProtocolConfig) (conn net.Conn, session SessionKind, targetAddr string, userHash string, err error) {
+//   - sessionPayload: valid only when session==SessionReverse (the JSON registration payload)
+func ServerHandshakeSessionAutoWithUserHash(rawConn net.Conn, cfg *ProtocolConfig) (conn net.Conn, session SessionKind, targetAddr string, userHash string, sessionPayload []byte, err error) {
 	conn, userHash, fail, err := serverHandshakeCoreWithUserHash(rawConn, cfg)
 	if err != nil {
-		return nil, SessionForward, "", "", err
+		return nil, SessionForward, "", "", nil, err
 	}
 
-	first := []byte{0}
-	if _, err := io.ReadFull(conn, first); err != nil {
-		_ = conn.Close()
-		return nil, SessionForward, "", "", fail(fmt.Errorf("read session preface failed: %w", err))
-	}
-
-	switch first[0] {
-	case tunnel.UoTMagicByte:
-		return conn, SessionUoT, "", userHash, nil
-	case tunnel.MuxMagicByte:
-		return conn, SessionMux, "", userHash, nil
-	case tunnel.ReverseMagicByte:
-		return conn, SessionReverse, "", userHash, nil
-	default:
-		// Put back the first byte for address decoding.
-		tuned := &prebufferConn{Conn: conn, buf: first}
-		addr, _, _, err := protocol.ReadAddress(tuned)
+	for {
+		msg, err := tunnel.ReadKIPMessage(conn)
 		if err != nil {
-			_ = tuned.Close()
-			return nil, SessionForward, "", "", fail(fmt.Errorf("read target address failed: %w", err))
+			_ = conn.Close()
+			return nil, SessionForward, "", "", nil, fail(fmt.Errorf("read session message failed: %w", err))
 		}
-		return tuned, SessionForward, addr, userHash, nil
+		if msg.Type == tunnel.KIPTypeKeepAlive {
+			continue
+		}
+		switch msg.Type {
+		case tunnel.KIPTypeStartUoT:
+			return conn, SessionUoT, "", userHash, nil, nil
+		case tunnel.KIPTypeStartMux:
+			return conn, SessionMux, "", userHash, nil, nil
+		case tunnel.KIPTypeStartRev:
+			return conn, SessionReverse, "", userHash, msg.Payload, nil
+		case tunnel.KIPTypeOpenTCP:
+			addr, _, _, err := protocol.ReadAddress(bytes.NewReader(msg.Payload))
+			if err != nil {
+				_ = conn.Close()
+				return nil, SessionForward, "", "", nil, fail(fmt.Errorf("decode target address failed: %w", err))
+			}
+			return conn, SessionForward, addr, userHash, nil, nil
+		default:
+			_ = conn.Close()
+			return nil, SessionForward, "", "", nil, fail(fmt.Errorf("unknown session message: %d", msg.Type))
+		}
 	}
 }
 
 // ServerHandshakeSessionAuto is like ServerHandshakeSessionAutoWithUserHash but omits the user hash.
 func ServerHandshakeSessionAuto(rawConn net.Conn, cfg *ProtocolConfig) (net.Conn, SessionKind, string, error) {
-	conn, session, targetAddr, _, err := ServerHandshakeSessionAutoWithUserHash(rawConn, cfg)
+	conn, session, targetAddr, _, _, err := ServerHandshakeSessionAutoWithUserHash(rawConn, cfg)
 	return conn, session, targetAddr, err
 }

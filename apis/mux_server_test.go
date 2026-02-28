@@ -63,7 +63,7 @@ func TestMuxSession_ServerHandshakeSessionAuto(t *testing.T) {
 			return
 		}
 
-		conn, session, _, _, err := ServerHandshakeSessionAutoWithUserHash(raw, serverCfg)
+		conn, session, _, _, _, err := ServerHandshakeSessionAutoWithUserHash(raw, serverCfg)
 		if err != nil {
 			serverErr <- err
 			return

@@ -63,7 +63,7 @@ func TestReverseProxySession(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		conn, session, _, userHash, err := ServerHandshakeSessionAutoWithUserHash(raw, serverCfg)
+		conn, session, _, userHash, helloPayload, err := ServerHandshakeSessionAutoWithUserHash(raw, serverCfg)
 		if err != nil {
 			serverErr <- err
 			return
@@ -73,7 +73,7 @@ func TestReverseProxySession(t *testing.T) {
 			serverErr <- fmt.Errorf("unexpected session kind: %v", session)
 			return
 		}
-		serverErr <- revMgr.HandleServerSession(conn, userHash)
+		serverErr <- revMgr.HandleServerSession(conn, userHash, helloPayload)
 	}()
 
 	clientCfg := &ProtocolConfig{
