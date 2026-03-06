@@ -107,6 +107,13 @@ func NewManager(urls []string) *Manager {
 	}
 }
 
+func newRuleBuildState() *ruleBuildState {
+	return &ruleBuildState{
+		exact:  make(map[string]struct{}),
+		suffix: make(map[string]struct{}),
+	}
+}
+
 // GetInstance returns the singleton Manager.
 func GetInstance(urls []string) *Manager {
 	once.Do(func() {
@@ -119,31 +126,53 @@ func GetInstance(urls []string) *Manager {
 func (m *Manager) Update() {
 	logx.Infof("GeoData", "Updating rules from %d sources...", len(m.urls))
 
-	state := &ruleBuildState{
-		exact:  make(map[string]struct{}),
-		suffix: make(map[string]struct{}),
-	}
+	state := newRuleBuildState()
+	m.applyRuleState(state)
 
+	loaded := 0
 	for _, u := range m.urls {
-		m.downloadAndParse(u, state)
+		if !m.downloadAndParse(u, state) {
+			continue
+		}
+		loaded++
+		m.applyRuleState(state)
+		logx.Infof("GeoData", "Rules Updated (%d/%d): %d IPv4 Ranges, %d IPv6 Ranges, %d Domains, %d Suffixes",
+			loaded, len(m.urls), len(m.ipRanges), len(m.ipv6Ranges), len(m.domainExact), len(m.domainSuffix))
 	}
 
-	// Optimize IP ranges by merging overlapping intervals.
-	mergedIPs := mergeRanges(state.ipv4)
-	mergedIPv6 := mergeIPv6Ranges(state.ipv6)
-
-	m.mu.Lock()
-	m.ipRanges = mergedIPs
-	m.ipv6Ranges = mergedIPv6
-	m.domainExact = state.exact
-	m.domainSuffix = state.suffix
-	m.mu.Unlock()
-
-	logx.Infof("GeoData", "Rules Updated: %d IPv4 Ranges, %d IPv6 Ranges, %d Domains, %d Suffixes",
-		len(mergedIPs), len(mergedIPv6), len(state.exact), len(state.suffix))
+	if loaded == 0 {
+		logx.Warnf("GeoData", "Rules Updated: no sources loaded successfully")
+	}
 }
 
-func (m *Manager) downloadAndParse(url string, state *ruleBuildState) {
+func (m *Manager) applyRuleState(state *ruleBuildState) {
+	ipv4 := append([]IPRange(nil), state.ipv4...)
+	ipv6 := append([]IPv6Range(nil), state.ipv6...)
+	mergedIPv4 := mergeRanges(ipv4)
+	mergedIPv6 := mergeIPv6Ranges(ipv6)
+	exact := cloneRuleSet(state.exact)
+	suffix := cloneRuleSet(state.suffix)
+
+	m.mu.Lock()
+	m.ipRanges = mergedIPv4
+	m.ipv6Ranges = mergedIPv6
+	m.domainExact = exact
+	m.domainSuffix = suffix
+	m.mu.Unlock()
+}
+
+func cloneRuleSet(src map[string]struct{}) map[string]struct{} {
+	if len(src) == 0 {
+		return make(map[string]struct{})
+	}
+	dst := make(map[string]struct{}, len(src))
+	for k := range src {
+		dst[k] = struct{}{}
+	}
+	return dst
+}
+
+func (m *Manager) downloadAndParse(url string, state *ruleBuildState) bool {
 	client := newRuleDownloadClient()
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
@@ -151,7 +180,7 @@ func (m *Manager) downloadAndParse(url string, state *ruleBuildState) {
 	resp, err := client.Get(url)
 	if err != nil {
 		logx.Warnf("GeoData", "Failed to download %s: %v", url, err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
 
@@ -159,7 +188,7 @@ func (m *Manager) downloadAndParse(url string, state *ruleBuildState) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logx.Warnf("GeoData", "Failed to read body from %s: %v", url, err)
-		return
+		return false
 	}
 
 	// 1. Try parsing as YAML.
@@ -168,7 +197,7 @@ func (m *Manager) downloadAndParse(url string, state *ruleBuildState) {
 		for _, rule := range rs.Payload {
 			parseRule(rule, state)
 		}
-		return
+		return true
 	}
 
 	// 2. Fallback: if YAML parsing failed (e.g. plain-text list), parse line by line.
@@ -184,6 +213,7 @@ func (m *Manager) downloadAndParse(url string, state *ruleBuildState) {
 			break
 		}
 	}
+	return true
 }
 
 // parseRule processes a single rule line.

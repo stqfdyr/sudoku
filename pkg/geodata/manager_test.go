@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -150,5 +151,67 @@ func TestDownloadAndParse_UsesRuleDownloadClient(t *testing.T) {
 
 	if _, ok := state.suffix["example.cn"]; !ok {
 		t.Fatalf("expected rules downloaded through injected client")
+	}
+}
+
+func TestUpdate_AppliesEachSourceIncrementally(t *testing.T) {
+	secondRelease := make(chan struct{})
+	firstServed := make(chan struct{}, 1)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/first"):
+			_, _ = w.Write([]byte("payload:\n  - DOMAIN-SUFFIX,first.cn\n"))
+			select {
+			case firstServed <- struct{}{}:
+			default:
+			}
+		case strings.HasSuffix(r.URL.Path, "/second"):
+			<-secondRelease
+			_, _ = w.Write([]byte("payload:\n  - DOMAIN-SUFFIX,second.cn\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	m := NewManager([]string{srv.URL + "/first", srv.URL + "/second"})
+
+	done := make(chan struct{})
+	go func() {
+		m.Update()
+		close(done)
+	}()
+
+	select {
+	case <-firstServed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first rule source was not requested")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if m.IsCN("www.first.cn:443", nil) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !m.IsCN("www.first.cn:443", nil) {
+		t.Fatalf("expected first source to be applied before second source completed")
+	}
+	if m.IsCN("www.second.cn:443", nil) {
+		t.Fatalf("second source should not be applied before its download completes")
+	}
+
+	close(secondRelease)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("update did not finish")
+	}
+
+	if !m.IsCN("www.second.cn:443", nil) {
+		t.Fatalf("expected second source to be applied after its download completed")
 	}
 }
