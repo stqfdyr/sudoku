@@ -33,7 +33,10 @@ import (
 )
 
 var directDial = func(network, addr string, timeout time.Duration) (net.Conn, error) {
-	return net.DialTimeout(network, addr, timeout)
+	d := dnsutil.OutboundDialer(timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return d.DialContext(ctx, network, addr)
 }
 
 func dialTarget(network string, src net.Addr, destAddrStr string, destIP net.IP, cfg *config.Config, geoMgr *geodata.Manager, dialer tunnel.Dialer, resolver *dnsutil.Resolver) (net.Conn, bool) {

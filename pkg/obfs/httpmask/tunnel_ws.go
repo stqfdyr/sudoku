@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/saba-futai/sudoku/pkg/dnsutil"
 )
 
 func normalizeWSSchemeFromAddress(serverAddress string, tlsEnabled bool) (string, string) {
@@ -144,7 +145,7 @@ func dialWS(ctx context.Context, serverAddress string, opts TunnelDialOptions) (
 		ResponseHeaderTimeout: 20 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
-			var d net.Dialer
+			d := dnsutil.OutboundDialer(0)
 			if addr == urlHost {
 				addr = dialAddr
 			}

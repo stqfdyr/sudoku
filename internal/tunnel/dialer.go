@@ -117,7 +117,7 @@ func (d *BaseDialer) dialBase() (net.Conn, error) {
 		}
 
 		// 1. Establish base TCP connection
-		rawRemote, err := net.DialTimeout("tcp", serverAddr, 5*time.Second)
+		rawRemote, err := dnsutil.OutboundDialer(5*time.Second).Dial("tcp", serverAddr)
 		if err != nil {
 			return nil, fmt.Errorf("dial server failed: %w", err)
 		}

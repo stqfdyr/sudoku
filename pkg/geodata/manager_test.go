@@ -20,8 +20,13 @@ with this application without prior consent.
 package geodata
 
 import (
+	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
+	"time"
 )
 
 func TestIsCN_HostPortMatchesDomainRules(t *testing.T) {
@@ -98,5 +103,52 @@ func TestParseRule_IPv6DoesNotPolluteIPv4Ranges(t *testing.T) {
 	}
 	if m.IsCN("36.112.0.1:443", ipv4) {
 		t.Fatalf("unexpected ipv4 match from ipv6-only rule")
+	}
+}
+
+func TestDownloadAndParse_UsesRuleDownloadClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("payload:\n  - DOMAIN-SUFFIX,example.cn\n"))
+	}))
+	defer srv.Close()
+
+	parsedURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	serverHost, serverPort, err := net.SplitHostPort(parsedURL.Host)
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+
+	oldNewRuleDownloadClient := newRuleDownloadClient
+	t.Cleanup(func() {
+		newRuleDownloadClient = oldNewRuleDownloadClient
+	})
+
+	newRuleDownloadClient = func() *http.Client {
+		return &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					if addr == net.JoinHostPort("resolver.test", serverPort) {
+						addr = net.JoinHostPort(serverHost, serverPort)
+					}
+					var d net.Dialer
+					return d.DialContext(ctx, network, addr)
+				},
+			},
+		}
+	}
+
+	state := &ruleBuildState{
+		exact:  make(map[string]struct{}),
+		suffix: make(map[string]struct{}),
+	}
+	m := &Manager{}
+	m.downloadAndParse("http://resolver.test:"+serverPort+"/rules", state)
+
+	if _, ok := state.suffix["example.cn"]; !ok {
+		t.Fatalf("expected rules downloaded through injected client")
 	}
 }

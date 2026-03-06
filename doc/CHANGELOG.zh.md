@@ -7,6 +7,7 @@
 - `dns`: 内置客户端侧硬编码 DNS 能力：DoH（阿里/腾讯）、缓存、过期兜底与 bogus IP（`198.18.0.0/15`）过滤；不新增配置字段，保持内核级默认策略。
 - `dns`: DNS 查询保持 `IPv4 only`，并仅用于客户端目标 / PAC / DIRECT 解析；代理服务器引导路径（`server_address` / tunnel bootstrap）不走这套解析链，避免自循环与引导污染。
 - `proxy/pac`: 在 FakeIP / OpenClash 一类环境下，PAC 与直连目标解析改用内置 resolver，避免系统 DNS 返回 `198.18.0.0/15` 导致误分流或误直连。
+- `proxy/tun`: 内核新增跨平台主动出站 bypass 能力，消费 `SUDOKU_OUTBOUND_*` 环境变量；规则下载、DoH、DIRECT、服务端 TCP 拨号与 HTTPMask 主动出站在 TUN 场景下可绕开系统默认隧道路由，避免自循环导致的个别 PAC 规则源下载失败。
 - `socks5/uot`: 修复 `UDP ASSOCIATE` 在 loopback / 多网卡 / point-to-point 接口场景下的本机地址通告与客户端地址学习逻辑，提升本地与虚拟网卡环境下的健壮性。
 - `tests`: 补充解析与 `UDP ASSOCIATE` 相关单测、集成测试，并让测试地址选择跳过 point-to-point 接口，避免 `utun` 等本机特殊地址导致误报。
 

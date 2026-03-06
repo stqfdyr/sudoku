@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/saba-futai/sudoku/pkg/dnsutil"
 	"github.com/saba-futai/sudoku/pkg/logx"
 	"gopkg.in/yaml.v3"
 )
@@ -94,6 +95,10 @@ type ruleBuildState struct {
 var instance *Manager
 var once sync.Once
 
+var newRuleDownloadClient = func() *http.Client {
+	return dnsutil.NewOutboundHTTPClient(30*time.Second, dnsutil.RecommendedClientResolver())
+}
+
 func NewManager(urls []string) *Manager {
 	return &Manager{
 		urls:         append([]string(nil), urls...),
@@ -139,7 +144,10 @@ func (m *Manager) Update() {
 }
 
 func (m *Manager) downloadAndParse(url string, state *ruleBuildState) {
-	client := http.Client{Timeout: 30 * time.Second}
+	client := newRuleDownloadClient()
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
 	resp, err := client.Get(url)
 	if err != nil {
 		logx.Warnf("GeoData", "Failed to download %s: %v", url, err)

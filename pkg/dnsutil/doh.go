@@ -87,7 +87,7 @@ func newHTTPSNameServer(srv ServerOptions, timeout time.Duration) (*httpsNameSer
 }
 
 func (s *httpsNameServer) dialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	var d net.Dialer
+	d := OutboundDialer(0)
 	if len(s.bootstrap) == 0 {
 		return d.DialContext(ctx, network, net.JoinHostPort(s.host, s.port))
 	}

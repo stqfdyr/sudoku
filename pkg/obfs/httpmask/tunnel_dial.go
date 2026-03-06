@@ -32,6 +32,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/saba-futai/sudoku/pkg/dnsutil"
 )
 
 func canonicalHeaderHost(urlHost, scheme string) string {
@@ -195,7 +197,7 @@ func newHTTPClient(urlHost, dialAddr, serverName, scheme string, maxIdleConns in
 			ResponseHeaderTimeout: 20 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			DialContext: func(dialCtx context.Context, network, addr string) (net.Conn, error) {
-				var d net.Dialer
+				d := dnsutil.OutboundDialer(0)
 				if addr == urlHost {
 					addr = dialAddr
 				}
