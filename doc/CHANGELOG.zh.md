@@ -3,6 +3,13 @@
 ## Unreleased
 - TBD
 
+## v0.3.2（2026-03-07）
+- `dns`: 内置客户端侧硬编码 DNS 能力：DoH（阿里/腾讯）、缓存、过期兜底与 bogus IP（`198.18.0.0/15`）过滤；不新增配置字段，保持内核级默认策略。
+- `dns`: DNS 查询保持 `IPv4 only`，并仅用于客户端目标 / PAC / DIRECT 解析；代理服务器引导路径（`server_address` / tunnel bootstrap）不走这套解析链，避免自循环与引导污染。
+- `proxy/pac`: 在 FakeIP / OpenClash 一类环境下，PAC 与直连目标解析改用内置 resolver，避免系统 DNS 返回 `198.18.0.0/15` 导致误分流或误直连。
+- `socks5/uot`: 修复 `UDP ASSOCIATE` 在 loopback / 多网卡 / point-to-point 接口场景下的本机地址通告与客户端地址学习逻辑，提升本地与虚拟网卡环境下的健壮性。
+- `tests`: 补充解析与 `UDP ASSOCIATE` 相关单测、集成测试，并让测试地址选择跳过 point-to-point 接口，避免 `utun` 等本机特殊地址导致误报。
+
 ## v0.2.6（2026-02-23）
 - `refactor`: 大规模模块化重构（不改协议/配置语义）：拆分 HTTPMask tunnel client/server 逻辑、拆分客户端 mixed proxy（SOCKS4/5/HTTP/路由/拨号）、拆分 reverse 重写逻辑并补单测，整体显著降低单文件复杂度与重复代码，便于后续维护与定位问题。
 - `httpmask`: masker 的 User-Agent/paths/content-types 列表改为 embed 资源，代码更精简且便于后续按需调整指纹数据集。
